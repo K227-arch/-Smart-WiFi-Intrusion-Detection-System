@@ -37,12 +37,16 @@ interface Device {
 let alerts: Alert[] = [];
 let devices: Map<string, Device> = new Map();
 let trustedMacs: Set<string> = new Set(["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]);
+let sseClients: express.Response[] = [];
 const KNOWN_AP_BSSID = "DE:AD:BE:EF:00:01";
 const KNOWN_SSID = "Enterprise_Secure_WiFi";
 
 // --- Detection Engine Logic ---
 const detectionEngine = {
   processPacket: (packet: WiFiPacket) => {
+    // 0. Broadcast packet for real-time view
+    broadcastPacket(packet);
+
     // 1. Rogue AP Detection (Evil Twin)
     if (packet.ssid === KNOWN_SSID && packet.bssid !== KNOWN_AP_BSSID) {
       addAlert({
@@ -108,6 +112,13 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">) {
   if (alerts.length > 100) alerts.pop();
 }
 
+function broadcastPacket(packet: WiFiPacket) {
+  const data = JSON.stringify(packet);
+  sseClients.forEach(client => {
+    client.write(`data: ${data}\n\n`);
+  });
+}
+
 // --- Traffic Simulator ---
 // Since we don't have a real WiFi card in monitor mode in Cloud Run, we simulate packets.
 function startSimulator() {
@@ -159,7 +170,7 @@ function startSimulator() {
         channel: 1,
       });
     }
-  }, 2000);
+  }, 500);
 }
 
 // --- Server Implementation ---
@@ -185,6 +196,50 @@ async function startServer() {
 
   app.get("/api/devices", (req, res) => {
     res.json(Array.from(devices.values()));
+  });
+
+  app.post("/api/devices/:mac/status", (req, res) => {
+    const { mac } = req.params;
+    const { status } = req.body;
+
+    if (!["trusted", "unknown", "blocked"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+
+    const device = devices.get(mac);
+    if (!device) {
+      // If we don't know the device yet, we can still pre-register its status
+      devices.set(mac, {
+        mac,
+        status,
+        firstSeen: Date.now(),
+        lastSeen: Date.now(),
+        avgSignal: 0
+      });
+    } else {
+      device.status = status;
+    }
+
+    if (status === "trusted") {
+      trustedMacs.add(mac);
+    } else {
+      trustedMacs.delete(mac);
+    }
+
+    res.json({ message: "Status updated", status, mac });
+  });
+
+  app.get("/api/stream", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    sseClients.push(res);
+
+    req.on("close", () => {
+      sseClients = sseClients.filter(c => c !== res);
+    });
   });
 
   // Vite middleware for development
