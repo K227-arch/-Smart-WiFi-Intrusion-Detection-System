@@ -1,0 +1,6 @@
+{
+  "name": "WiFi Sentinel - Smart IDS",
+  "description": "A lightweight, intelligent wireless intrusion detection system for monitoring threats like Rogue APs, MAC spoofing, and deauthentication attacks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
