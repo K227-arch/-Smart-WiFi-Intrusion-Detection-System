@@ -39,12 +39,11 @@ export function useWidsData() {
     }
   }, []);
 
-  // ── SSE: only listen for alert events — packets go to LiveTrafficTab directly ──
+  // ── SSE: listen for alert and device events ──
   useEffect(() => {
     const es = new EventSource("/api/stream");
 
-    // Use named event listener — browser filters at protocol level,
-    // packet events never reach this handler at all
+    // Alert events — only fire when a real detection happens (rare)
     const handleAlert = (event: MessageEvent) => {
       try {
         const incoming: Alert = JSON.parse(event.data);
@@ -58,10 +57,33 @@ export function useWidsData() {
       }
     };
 
+    // Device events — new device seen or status changed
+    // Merge into existing devices array without replacing the whole list
+    const handleDevice = (event: MessageEvent) => {
+      try {
+        const incoming: Device = JSON.parse(event.data);
+        setDevices((prev) => {
+          const idx = prev.findIndex((d) => d.mac === incoming.mac);
+          if (idx === -1) {
+            // New device — append
+            return [...prev, incoming];
+          }
+          // Existing device status changed — update in place
+          const next = [...prev];
+          next[idx] = { ...next[idx], ...incoming };
+          return next;
+        });
+      } catch {
+        // malformed — ignore
+      }
+    };
+
     es.addEventListener("alert", handleAlert);
+    es.addEventListener("device", handleDevice);
     es.onerror = () => es.close();
     return () => {
       es.removeEventListener("alert", handleAlert);
+      es.removeEventListener("device", handleDevice);
       es.close();
     };
   }, []);
@@ -77,16 +99,17 @@ export function useWidsData() {
   }, [fetchAlerts, fetchData]);
 
   // ── Engine config ──
-  const fetchConfig = useCallback(async () => {
-    try {
-      const res = await fetch("/api/config");
-      setEngineConfig(await res.json());
-    } catch (e) {
-      console.error("Config fetch error:", e);
-    }
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const res = await fetch("/api/config");
+        setEngineConfig(await res.json());
+      } catch (e) {
+        console.error("Config fetch error:", e);
+      }
+    };
+    fetchConfig();
   }, []);
-
-  useEffect(() => { fetchConfig(); }, [fetchConfig]);
 
   const saveConfig = useCallback(async (cfg: EngineConfig) => {
     try {

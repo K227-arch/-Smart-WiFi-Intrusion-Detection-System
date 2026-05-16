@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Fragment, useCallback, useState } from "react";
+import { Fragment, memo, useCallback, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
 
@@ -77,14 +77,21 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
     }
   }, [alerts, devices, customPrompt]);
 
-  const handleTabChange = (tab: TabId) => {
+  const handleTabChange = useCallback((tab: TabId) => {
     setSelectedTab(tab);
     setIsMenuOpen(false);
     if (tab === "alerts") clearAlertBadge();
-  };
+  }, [clearAlertBadge]);
 
-  const exportLogs = () => window.open("/api/alerts/export", "_blank");
-  const highSeverityCount = alerts.filter((a) => a.severity === "high").length;
+  const toggleMenu = useCallback(() => setIsMenuOpen((v) => !v), []);
+  const closeMenu = useCallback(() => setIsMenuOpen(false), []);
+  const exportLogs = useCallback(() => window.open("/api/alerts/export", "_blank"), []);
+
+  // Only recompute when alerts array reference changes
+  const highSeverityCount = useMemo(
+    () => alerts.filter((a) => a.severity === "high").length,
+    [alerts]
+  );
 
   return (
     <div className="h-screen w-full bg-slate-950 text-slate-300 font-sans flex flex-col overflow-hidden select-none">
@@ -93,7 +100,7 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
         highSeverityCount={highSeverityCount}
         isAnalyzing={isAnalyzing}
         isMenuOpen={isMenuOpen}
-        onToggleMenu={() => setIsMenuOpen((v) => !v)}
+        onToggleMenu={toggleMenu}
         onRunAnalysis={runAiAnalysis}
         onRefresh={fetchData}
       />
@@ -112,7 +119,7 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
         {isMenuOpen && (
           <div
             className="absolute inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden"
-            onClick={() => setIsMenuOpen(false)}
+            onClick={closeMenu}
           />
         )}
 
