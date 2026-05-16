@@ -30,24 +30,31 @@ export function LiveTrafficTab() {
   useEffect(() => {
     const eventSource = new EventSource("/api/stream");
 
-    eventSource.onmessage = (event) => {
-      const parsed = JSON.parse(event.data);
-      // Server now wraps packets: { event: "packet", data: {...} }
-      const packet: WiFiPacket = parsed.event === "packet" ? parsed.data : parsed;
-
-      setPackets((prev) => [packet, ...prev].slice(0, 50));
-      setStats((prev) => ({
-        total: prev.total + 1,
-        data: packet.type === "data" ? prev.data + 1 : prev.data,
-        mgmt: packet.type === "mgmt" ? prev.mgmt + 1 : prev.mgmt,
-        beacons: packet.type === "beacons" ? prev.beacons + 1 : prev.beacons,
-        deauth: packet.type === "deauth" ? prev.deauth + 1 : prev.deauth,
-        totalSignal: prev.totalSignal + packet.signalStrength,
-      }));
+    // Named event listener — only packet events reach this handler,
+    // alert events are completely ignored at the browser protocol level
+    const handlePacket = (event: MessageEvent) => {
+      try {
+        const packet: WiFiPacket = JSON.parse(event.data);
+        setPackets((prev) => [packet, ...prev].slice(0, 50));
+        setStats((prev) => ({
+          total: prev.total + 1,
+          data: packet.type === "data" ? prev.data + 1 : prev.data,
+          mgmt: packet.type === "mgmt" ? prev.mgmt + 1 : prev.mgmt,
+          beacons: packet.type === "beacons" ? prev.beacons + 1 : prev.beacons,
+          deauth: packet.type === "deauth" ? prev.deauth + 1 : prev.deauth,
+          totalSignal: prev.totalSignal + packet.signalStrength,
+        }));
+      } catch {
+        // malformed — ignore
+      }
     };
 
+    eventSource.addEventListener("packet", handlePacket);
     eventSource.onerror = () => eventSource.close();
-    return () => eventSource.close();
+    return () => {
+      eventSource.removeEventListener("packet", handlePacket);
+      eventSource.close();
+    };
   }, []);
 
   const avgSignal = stats.total > 0 ? stats.totalSignal / stats.total : 0;

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 export interface Alert {
   id: string;
   timestamp: number;
-  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE";
+  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY";
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
@@ -42,6 +42,8 @@ export interface SystemStatus {
 
 export interface Analytics {
   detectionCounts: Record<string, number>;
+  falsePositiveCounts: Record<string, number>;
+  accuracyByType: Record<string, number>;
   totalDetections: number;
   totalPacketsProcessed: number;
   deviceBreakdown: { trusted: number; unknown: number; blocked: number };
@@ -54,6 +56,20 @@ export interface TrafficBucket {
   beacons: number;
   deauth: number;
   mgmt: number;
+}
+
+export interface KnownNetwork {
+  ssid: string;
+  bssid: string;
+  channel: number;
+}
+
+export interface EngineConfig {
+  knownNetworks: KnownNetwork[];
+  trustedMacs: string[];
+  deauthThreshold: number;
+  deauthWindowMs: number;
+  dedupWindowMs: number;
 }
 
 export type AlertTypeMeta = {

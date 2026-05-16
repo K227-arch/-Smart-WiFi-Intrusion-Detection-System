@@ -8,13 +8,13 @@ import { AnimatePresence } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
 
 import { useWidsData } from "./hooks/useWidsData";
-import { formatUptime, formatNumber } from "./lib/utils";
-import { cn } from "./lib/utils";
+import { formatUptime, formatNumber, cn } from "./lib/utils";
 
 import { Header } from "./components/Header";
 import { Sidebar, type TabId } from "./components/Sidebar";
 import { IncidentTimeline } from "./components/IncidentTimeline";
 import { DeviceModal } from "./components/DeviceModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 import { DashboardTab } from "./tabs/DashboardTab";
 import { DevicesTab } from "./tabs/DevicesTab";
@@ -32,9 +32,14 @@ export default function App() {
     status,
     analytics,
     chartData,
+    engineConfig,
     newAlertCount,
     clearAlertBadge,
     updateDeviceStatus,
+    dismissAlert,
+    clearAllAlerts,
+    saveConfig,
+    refetch: fetchData,
   } = useWidsData();
 
   const [selectedTab, setSelectedTab] = useState<TabId>("dashboard");
@@ -79,7 +84,6 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
   };
 
   const exportLogs = () => window.open("/api/alerts/export", "_blank");
-
   const highSeverityCount = alerts.filter((a) => a.severity === "high").length;
 
   return (
@@ -91,6 +95,7 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
         isMenuOpen={isMenuOpen}
         onToggleMenu={() => setIsMenuOpen((v) => !v)}
         onRunAnalysis={runAiAnalysis}
+        onRefresh={fetchData}
       />
 
       <main className="flex-1 flex flex-col lg:grid lg:grid-cols-12 gap-0 overflow-hidden relative">
@@ -116,52 +121,69 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
           <AnimatePresence mode="wait">
             {selectedTab === "dashboard" && (
               <Fragment key="dashboard">
-                <DashboardTab
-                  alerts={alerts}
-                  devices={devices}
-                  status={status}
-                  chartData={chartData}
-                  aiAnalysis={aiAnalysis}
-                  isAnalyzing={isAnalyzing}
-                  onRunAnalysis={runAiAnalysis}
-                />
+                <ErrorBoundary fallbackLabel="Dashboard Error">
+                  <DashboardTab
+                    alerts={alerts}
+                    devices={devices}
+                    status={status}
+                    chartData={chartData}
+                    aiAnalysis={aiAnalysis}
+                    isAnalyzing={isAnalyzing}
+                    onRunAnalysis={runAiAnalysis}
+                  />
+                </ErrorBoundary>
               </Fragment>
             )}
             {selectedTab === "traffic" && (
               <Fragment key="traffic">
-                <LiveTrafficTab />
+                <ErrorBoundary fallbackLabel="Live Traffic Error">
+                  <LiveTrafficTab />
+                </ErrorBoundary>
               </Fragment>
             )}
             {selectedTab === "devices" && (
               <Fragment key="devices">
-                <DevicesTab
-                  devices={devices}
-                  onSelectDevice={setSelectedDevice}
-                  onUpdateStatus={updateDeviceStatus}
-                />
+                <ErrorBoundary fallbackLabel="Device Registry Error">
+                  <DevicesTab
+                    devices={devices}
+                    onSelectDevice={setSelectedDevice}
+                    onUpdateStatus={updateDeviceStatus}
+                  />
+                </ErrorBoundary>
               </Fragment>
             )}
             {selectedTab === "alerts" && (
               <Fragment key="alerts">
-                <AlertsTab alerts={alerts} onExport={exportLogs} />
+                <ErrorBoundary fallbackLabel="Forensic Logs Error">
+                  <AlertsTab
+                    alerts={alerts}
+                    onExport={exportLogs}
+                    onDismiss={dismissAlert}
+                    onClearAll={clearAllAlerts}
+                  />
+                </ErrorBoundary>
               </Fragment>
             )}
             {selectedTab === "analytics" && (
               <Fragment key="analytics">
-                <AnalyticsTab
-                  analytics={analytics}
-                  alerts={alerts}
-                  devices={devices}
-                  chartData={chartData}
-                />
+                <ErrorBoundary fallbackLabel="Analytics Error">
+                  <AnalyticsTab
+                    analytics={analytics}
+                    chartData={chartData}
+                  />
+                </ErrorBoundary>
               </Fragment>
             )}
             {selectedTab === "settings" && (
               <Fragment key="settings">
-                <SettingsTab
-                  customPrompt={customPrompt}
-                  onPromptChange={setCustomPrompt}
-                />
+                <ErrorBoundary fallbackLabel="Settings Error">
+                  <SettingsTab
+                    customPrompt={customPrompt}
+                    onPromptChange={setCustomPrompt}
+                    engineConfig={engineConfig}
+                    onSaveConfig={saveConfig}
+                  />
+                </ErrorBoundary>
               </Fragment>
             )}
           </AnimatePresence>
@@ -173,9 +195,9 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
       <DeviceModal
         device={selectedDevice}
         onClose={() => setSelectedDevice(null)}
-        onUpdateStatus={(mac, status) => {
-          updateDeviceStatus(mac, status);
-          setSelectedDevice((prev) => (prev ? { ...prev, status } : null));
+        onUpdateStatus={(mac, newStatus) => {
+          updateDeviceStatus(mac, newStatus);
+          setSelectedDevice((prev) => (prev ? { ...prev, status: newStatus } : null));
         }}
       />
 
@@ -190,12 +212,7 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
           </span>
         </div>
         <div className="flex gap-4">
-          <span
-            className={cn(
-              "font-bold uppercase hidden sm:inline",
-              status?.monitoring ? "text-emerald-500" : "text-rose-500"
-            )}
-          >
+          <span className={cn("font-bold uppercase hidden sm:inline", status?.monitoring ? "text-emerald-500" : "text-rose-500")}>
             {status?.monitoring ? "Engine Active" : "Engine Offline"}
           </span>
           <span className="text-sky-500 font-bold uppercase whitespace-nowrap">SALAMANDA v2.0</span>

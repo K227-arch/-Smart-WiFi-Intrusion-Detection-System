@@ -1,4 +1,4 @@
-import { Activity, BarChart2, CheckCircle2, Server } from "lucide-react";
+import { Activity, BarChart2, CheckCircle2, Server, XCircle } from "lucide-react";
 import { motion } from "motion/react";
 import {
   Area,
@@ -6,7 +6,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Legend,
   Pie,
   PieChart,
@@ -15,38 +14,48 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { cn, formatNumber, mockChartData } from "../lib/utils";
-import type { Alert, Analytics, Device, TrafficBucket } from "../types";
+import { formatNumber, mockChartData } from "../lib/utils";
+import type { Analytics, TrafficBucket } from "../types";
 import { KpiCard } from "../components/ui/KpiCard";
 
 interface AnalyticsTabProps {
   analytics: Analytics | null;
-  alerts: Alert[];
-  devices: Device[];
   chartData: TrafficBucket[];
 }
 
 const PIE_COLORS = ["#10b981", "#f59e0b", "#f43f5e"];
+
 const DETECTION_COLORS: Record<string, string> = {
   ROGUE_AP: "#f43f5e",
   DEAUTH_ATTACK: "#f97316",
   MAC_SPOOFING: "#a855f7",
   UNAUTHORIZED_DEVICE: "#f59e0b",
+  CHANNEL_ANOMALY: "#0ea5e9",
 };
 
-const ACCURACY_DATA = [
-  { attack: "Rogue AP", key: "ROGUE_AP", accuracy: 95 },
-  { attack: "Deauth Attack", key: "DEAUTH_ATTACK", accuracy: 93 },
-  { attack: "MAC Spoofing", key: "MAC_SPOOFING", accuracy: 90 },
-  { attack: "Unauth Device", key: "UNAUTHORIZED_DEVICE", accuracy: 98 },
-];
+// Target accuracy benchmarks from spec Chapter 6
+const ACCURACY_TARGETS: Record<string, number> = {
+  ROGUE_AP: 95,
+  DEAUTH_ATTACK: 93,
+  MAC_SPOOFING: 90,
+  UNAUTHORIZED_DEVICE: 98,
+  CHANNEL_ANOMALY: 92,
+};
 
-export function AnalyticsTab({ analytics, alerts, devices, chartData }: AnalyticsTabProps) {
+const ATTACK_LABELS: Record<string, string> = {
+  ROGUE_AP: "Rogue AP",
+  DEAUTH_ATTACK: "Deauth Attack",
+  MAC_SPOOFING: "MAC Spoofing",
+  UNAUTHORIZED_DEVICE: "Unauth Device",
+  CHANNEL_ANOMALY: "Channel Anomaly",
+};
+
+export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
   const liveChart = chartData.length > 0 ? chartData : mockChartData;
 
   const detectionBarData = analytics
     ? Object.entries(analytics.detectionCounts).map(([type, count]) => ({
-        name: type.replace(/_/g, " "),
+        name: ATTACK_LABELS[type] ?? type.replace(/_/g, " "),
         count,
         fill: DETECTION_COLORS[type] ?? "#64748b",
       }))
@@ -59,6 +68,17 @@ export function AnalyticsTab({ analytics, alerts, devices, chartData }: Analytic
         { name: "Blocked", value: analytics.deviceBreakdown.blocked },
       ].filter((d) => d.value > 0)
     : [];
+
+  // Build accuracy rows from live server data
+  const accuracyRows = Object.keys(ACCURACY_TARGETS).map((key) => {
+    const detected = analytics?.detectionCounts[key] ?? 0;
+    const fp = analytics?.falsePositiveCounts[key] ?? 0;
+    // Use server-calculated accuracy if available, else fall back to target
+    const liveAccuracy = analytics?.accuracyByType[key];
+    const displayAccuracy = detected > 0 && liveAccuracy !== undefined ? liveAccuracy : ACCURACY_TARGETS[key];
+    const isLive = detected > 0;
+    return { key, label: ATTACK_LABELS[key], detected, fp, displayAccuracy, isLive };
+  });
 
   return (
     <motion.div
@@ -92,10 +112,10 @@ export function AnalyticsTab({ analytics, alerts, devices, chartData }: Analytic
           trendColor="text-rose-400"
         />
         <KpiCard
-          label="Blocked Devices"
-          value={analytics?.deviceBreakdown.blocked ?? 0}
+          label="False Positives"
+          value={Object.values(analytics?.falsePositiveCounts ?? {}).reduce((a, b) => a + b, 0)}
           color="text-amber-500"
-          trend="Quarantined nodes"
+          trend="Dismissed alerts"
           trendColor="text-amber-400"
         />
       </div>
@@ -110,20 +130,13 @@ export function AnalyticsTab({ analytics, alerts, devices, chartData }: Analytic
           <ResponsiveContainer width="100%" height="85%">
             <BarChart data={detectionBarData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="name" tick={{ fontSize: 9, fill: "#64748b" }} />
+              <XAxis dataKey="name" tick={{ fontSize: 8, fill: "#64748b" }} />
               <YAxis tick={{ fontSize: 9, fill: "#64748b" }} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#0f172a",
-                  border: "1px solid #1e293b",
-                  fontSize: "10px",
-                }}
+              <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }} />
+              <Bar dataKey="count" radius={[3, 3, 0, 0]}
+                fill="#0ea5e9"
+                label={false}
               />
-              <Bar dataKey="count" radius={[3, 3, 0, 0]}>
-                {detectionBarData.map((entry, i) => (
-                  <Cell key={i} fill={entry.fill} />
-                ))}
-              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -144,18 +157,15 @@ export function AnalyticsTab({ analytics, alerts, devices, chartData }: Analytic
                   outerRadius={70}
                   paddingAngle={3}
                   dataKey="value"
+                  fill="#0ea5e9"
                 >
-                  {devicePieData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  {devicePieData.map((entry, i) => (
+                    <g key={entry.name}>
+                      <rect fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    </g>
                   ))}
                 </Pie>
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#0f172a",
-                    border: "1px solid #1e293b",
-                    fontSize: "10px",
-                  }}
-                />
+                <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }} />
                 <Legend iconSize={8} wrapperStyle={{ fontSize: "10px", color: "#94a3b8" }} />
               </PieChart>
             </ResponsiveContainer>
@@ -167,54 +177,61 @@ export function AnalyticsTab({ analytics, alerts, devices, chartData }: Analytic
         </div>
       </div>
 
-      {/* Detection accuracy table */}
+      {/* Detection accuracy table — live data */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shrink-0">
-        <div className="px-6 py-4 border-b border-slate-800">
-          <h4 className="text-sm font-bold text-white uppercase tracking-wider">
-            Detection Performance Metrics
-          </h4>
-          <p className="text-[10px] text-slate-500 mt-1">
-            Based on system design accuracy targets (Chapter 6)
-          </p>
+        <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h4 className="text-sm font-bold text-white uppercase tracking-wider">
+              Detection Performance Metrics
+            </h4>
+            <p className="text-[10px] text-slate-500 mt-1">
+              Live accuracy calculated from session detections minus dismissed false positives
+            </p>
+          </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[500px]">
+          <table className="w-full text-left min-w-[560px]">
             <thead className="text-[10px] text-slate-600 uppercase border-b border-slate-800 bg-slate-950/30">
               <tr>
                 <th className="px-6 py-3">Attack Type</th>
-                <th className="px-6 py-3 text-center">Detected (Session)</th>
-                <th className="px-6 py-3 text-center">Target Accuracy</th>
-                <th className="px-6 py-3">Accuracy Bar</th>
-                <th className="px-6 py-3 text-center">Status</th>
+                <th className="px-6 py-3 text-center">Detected</th>
+                <th className="px-6 py-3 text-center">False +</th>
+                <th className="px-6 py-3 text-center">Accuracy</th>
+                <th className="px-6 py-3">Bar</th>
+                <th className="px-6 py-3 text-center">Source</th>
               </tr>
             </thead>
             <tbody className="text-xs">
-              {ACCURACY_DATA.map((row) => (
-                <tr
-                  key={row.attack}
-                  className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors"
-                >
-                  <td className="px-6 py-4 font-semibold text-slate-200">{row.attack}</td>
-                  <td className="px-6 py-4 text-center font-mono text-sky-400 font-bold">
-                    {analytics?.detectionCounts[row.key] ?? 0}
+              {accuracyRows.map((row) => (
+                <tr key={row.key} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
+                  <td className="px-6 py-4 font-semibold text-slate-200">{row.label}</td>
+                  <td className="px-6 py-4 text-center font-mono text-sky-400 font-bold">{row.detected}</td>
+                  <td className="px-6 py-4 text-center font-mono text-rose-400 font-bold">{row.fp}</td>
+                  <td className="px-6 py-4 text-center font-mono font-bold"
+                    style={{ color: row.displayAccuracy >= 90 ? "#10b981" : row.displayAccuracy >= 75 ? "#f59e0b" : "#f43f5e" }}>
+                    {row.displayAccuracy}%
                   </td>
-                  <td className="px-6 py-4 text-center font-mono text-emerald-400 font-bold">
-                    {row.accuracy}%
-                  </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 w-32">
                     <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
-                        animate={{ width: `${row.accuracy}%` }}
-                        transition={{ duration: 1, delay: 0.2 }}
-                        className="h-full bg-emerald-500 rounded-full"
+                        animate={{ width: `${row.displayAccuracy}%` }}
+                        transition={{ duration: 1, delay: 0.1 }}
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: row.displayAccuracy >= 90 ? "#10b981" : row.displayAccuracy >= 75 ? "#f59e0b" : "#f43f5e" }}
                       />
                     </div>
                   </td>
                   <td className="px-6 py-4 text-center">
-                    <span className="flex items-center justify-center gap-1 text-emerald-500 text-[10px] font-bold">
-                      <CheckCircle2 className="w-3 h-3" /> Active
-                    </span>
+                    {row.isLive ? (
+                      <span className="flex items-center justify-center gap-1 text-emerald-500 text-[9px] font-bold">
+                        <CheckCircle2 className="w-3 h-3" /> Live
+                      </span>
+                    ) : (
+                      <span className="flex items-center justify-center gap-1 text-slate-500 text-[9px] font-bold">
+                        <XCircle className="w-3 h-3" /> Target
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -233,38 +250,12 @@ export function AnalyticsTab({ analytics, alerts, devices, chartData }: Analytic
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
             <XAxis dataKey="time" tick={{ fontSize: 9, fill: "#64748b" }} />
             <YAxis tick={{ fontSize: 9, fill: "#64748b" }} />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: "#0f172a",
-                border: "1px solid #1e293b",
-                fontSize: "10px",
-              }}
-            />
+            <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }} />
             <Legend iconSize={8} wrapperStyle={{ fontSize: "10px", color: "#94a3b8" }} />
-            <Area
-              type="monotone"
-              dataKey="data"
-              stroke="#0ea5e9"
-              fill="#0ea5e9"
-              fillOpacity={0.1}
-              name="Data"
-            />
-            <Area
-              type="monotone"
-              dataKey="beacons"
-              stroke="#10b981"
-              fill="#10b981"
-              fillOpacity={0.05}
-              name="Beacons"
-            />
-            <Area
-              type="monotone"
-              dataKey="deauth"
-              stroke="#f43f5e"
-              fill="#f43f5e"
-              fillOpacity={0.15}
-              name="Deauth"
-            />
+            <Area type="monotone" dataKey="data" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.1} name="Data" />
+            <Area type="monotone" dataKey="beacons" stroke="#10b981" fill="#10b981" fillOpacity={0.05} name="Beacons" />
+            <Area type="monotone" dataKey="mgmt" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.05} name="MGMT" />
+            <Area type="monotone" dataKey="deauth" stroke="#f43f5e" fill="#f43f5e" fillOpacity={0.15} name="Deauth" />
           </AreaChart>
         </ResponsiveContainer>
       </div>

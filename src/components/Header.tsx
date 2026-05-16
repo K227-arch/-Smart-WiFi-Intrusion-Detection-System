@@ -1,4 +1,4 @@
-import { BrainCircuit, Menu, ShieldAlert, X } from "lucide-react";
+import { BrainCircuit, Menu, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { motion } from "motion/react";
 import { cn } from "../lib/utils";
 import type { SystemStatus } from "../types";
@@ -11,6 +11,7 @@ interface HeaderProps {
   isMenuOpen: boolean;
   onToggleMenu: () => void;
   onRunAnalysis: () => void;
+  onRefresh: () => void;
 }
 
 export function Header({
@@ -20,6 +21,7 @@ export function Header({
   isMenuOpen,
   onToggleMenu,
   onRunAnalysis,
+  onRefresh,
 }: HeaderProps) {
   return (
     <nav className="h-16 border-b border-slate-800 bg-slate-900/50 px-4 md:px-6 flex items-center justify-between shrink-0 z-50">
@@ -87,6 +89,14 @@ export function Header({
           <span className="hidden xs:inline">
             {isAnalyzing ? "Analyzing..." : "AI Insight"}
           </span>
+        </button>
+
+        <button
+          onClick={onRefresh}
+          title="Refresh data now (auto-refreshes every 30 min)"
+          className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-slate-400 hover:text-white transition-colors"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
         </button>
 
         <div className="text-right hidden xs:block">

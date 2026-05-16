@@ -30,7 +30,10 @@ export function IncidentTimeline({ alerts, onExport }: IncidentTimelineProps) {
 
       <div className="flex-1 space-y-3 overflow-y-auto custom-scrollbar pr-1">
         <AnimatePresence initial={false}>
-          {alerts.slice(0, 15).map((alert) => {
+          {alerts
+            .filter((alert) => alert.type !== "UNAUTHORIZED_DEVICE")
+            .slice(0, 15)
+            .map((alert) => {
             const meta = ALERT_TYPE_META[alert.type];
             return (
               <motion.div
@@ -61,7 +64,7 @@ export function IncidentTimeline({ alerts, onExport }: IncidentTimelineProps) {
           })}
         </AnimatePresence>
 
-        {alerts.length === 0 && (
+        {alerts.filter((a) => a.type !== "UNAUTHORIZED_DEVICE").length === 0 && (
           <div className="text-center py-12 text-slate-600 italic text-xs flex flex-col items-center gap-2">
             <ShieldCheck className="w-8 h-8 text-emerald-800" />
             No active threats discovered.

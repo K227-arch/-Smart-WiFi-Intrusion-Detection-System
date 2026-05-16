@@ -1,4 +1,4 @@
-import { AlertTriangle, Fingerprint, Radio, Zap } from "lucide-react";
+import { AlertTriangle, Fingerprint, Radio, Wifi, Zap } from "lucide-react";
 import type { Alert, AlertTypeMeta } from "../types";
 
 export const ALERT_TYPE_META: Record<Alert["type"], AlertTypeMeta> = {
@@ -29,5 +29,12 @@ export const ALERT_TYPE_META: Record<Alert["type"], AlertTypeMeta> = {
     color: "text-amber-400",
     bg: "bg-amber-500/10",
     border: "border-amber-500/30",
+  },
+  CHANNEL_ANOMALY: {
+    label: "Channel Anomaly",
+    icon: <Wifi className="w-3.5 h-3.5" />,
+    color: "text-sky-400",
+    bg: "bg-sky-500/10",
+    border: "border-sky-500/30",
   },
 };
