@@ -3,9 +3,11 @@ import {
   BarChart2,
   Brain,
   History,
+  Network,
   Server,
   Settings as SettingsIcon,
   Shield,
+  ShieldAlert,
 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn, formatNumber, formatUptime } from "../lib/utils";
@@ -13,7 +15,7 @@ import type { Device, SystemStatus } from "../types";
 import { NavButton } from "./ui/NavButton";
 import { SidebarStat } from "./ui/SidebarStat";
 
-export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "ml" | "settings";
+export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "ml" | "network" | "snort" | "settings";
 
 interface SidebarProps {
   selectedTab: TabId;
@@ -90,6 +92,18 @@ export const Sidebar = memo(function Sidebar({
           <NavButton active={selectedTab === "ml"} onClick={() => onTabChange("ml")}>
             <span className="flex items-center gap-2">
               <Brain className="w-3.5 h-3.5" /> ML Engine
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "network"} onClick={() => onTabChange("network")}>
+            <span className="flex items-center gap-2">
+              <Network className="w-3.5 h-3.5" /> Network
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "snort"} onClick={() => onTabChange("snort")}>
+            <span className="flex items-center gap-2">
+              <ShieldAlert className="w-3.5 h-3.5" /> Snort Rules
             </span>
           </NavButton>
 
