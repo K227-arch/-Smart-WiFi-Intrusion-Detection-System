@@ -33,12 +33,14 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.21",
-    "cap": "^0.2.1",
     "esbuild": "^0.25.0",
-    "onnxruntime-node": "^1.20.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
+  },
+  "optionalDependencies": {
+    "cap": "^0.2.1",
+    "onnxruntime-node": "^1.20.1"
   }
 }
