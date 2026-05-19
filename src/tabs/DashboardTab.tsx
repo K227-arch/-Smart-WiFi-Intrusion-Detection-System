@@ -123,7 +123,7 @@ export function DashboardTab({
         <div className="sm:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col h-44 sm:h-auto">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-[10px] font-bold text-sky-500 uppercase flex items-center gap-2">
-              <BrainCircuit className="w-3 h-3" /> AI Analysis
+              <BrainCircuit className="w-3 h-3" /> ML Insight
             </h4>
             <button
               onClick={onRunAnalysis}
@@ -140,7 +140,7 @@ export function DashboardTab({
                 Analyzing network posture...
               </div>
             ) : (
-              aiAnalysis || "Click Run to generate AI security assessment."
+              aiAnalysis || "Click Run to generate ML security assessment."
             )}
           </div>
         </div>

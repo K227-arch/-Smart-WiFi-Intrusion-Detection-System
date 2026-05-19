@@ -1,8 +1,6 @@
 import {
   Activity,
-  History,
   Plus,
-  RotateCcw,
   Save,
   Shield,
   Trash2,
@@ -14,18 +12,9 @@ import { cn } from "../lib/utils";
 import type { EngineConfig, KnownNetwork } from "../types";
 
 interface SettingsTabProps {
-  customPrompt: string;
-  onPromptChange: (prompt: string) => void;
   engineConfig: EngineConfig | null;
   onSaveConfig: (cfg: EngineConfig) => void;
 }
-
-const DEFAULT_PROMPT = `You are a cybersecurity expert analyzing logs from a Wireless Intrusion Detection System (WIDS).
-Current Alerts: {{ALERTS}}
-Current Network Density: {{DEVICES}} devices detected.
-
-Provide a concise security posture assessment and 3 actionable recommendations for the network administrator.
-Keep it professional and technical but accessible. Format in Markdown.`;
 
 const DETECTION_RULES = [
   { title: "Rogue AP (Evil Twin)", rule: "IF SSID matches known network AND BSSID is different → FLAG as Rogue AP", color: "border-rose-500/30 bg-rose-500/5" },
@@ -35,8 +24,7 @@ const DETECTION_RULES = [
   { title: "Unauthorized Device", rule: "IF MAC address not in trusted whitelist AND first time seen → FLAG device", color: "border-amber-500/30 bg-amber-500/5" },
 ];
 
-export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSaveConfig }: SettingsTabProps) {
-  // Local editable copies of config
+export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
   const [networks, setNetworks] = useState<KnownNetwork[]>([]);
   const [trustedMacs, setTrustedMacs] = useState<string[]>([]);
   const [deauthThreshold, setDeauthThreshold] = useState(5);
@@ -46,7 +34,6 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
   const [newNetwork, setNewNetwork] = useState<KnownNetwork>({ ssid: "", bssid: "", channel: 6 });
   const [saved, setSaved] = useState(false);
 
-  // Sync from server config when it loads
   useEffect(() => {
     if (!engineConfig) return;
     setNetworks(engineConfig.knownNetworks);
@@ -90,7 +77,7 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
       <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-white uppercase tracking-wider">System Configuration</h2>
-          <p className="text-[10px] text-slate-500 mt-0.5">Network rules, detection thresholds, and AI prompt</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">Network rules and detection thresholds</p>
         </div>
         <button
           onClick={handleSave}
@@ -117,7 +104,6 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
           <p className="text-[10px] text-slate-500">
             Legitimate SSIDs and their expected BSSIDs. Any beacon from a different BSSID triggers a Rogue AP or MAC Spoofing alert.
           </p>
-
           <div className="space-y-2">
             {networks.map((n, i) => (
               <div key={i} className="flex items-center gap-3 p-3 bg-slate-950 border border-slate-800 rounded-lg">
@@ -132,8 +118,6 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
               </div>
             ))}
           </div>
-
-          {/* Add network form */}
           <div className="grid grid-cols-3 gap-2">
             <input
               value={newNetwork.ssid}
@@ -175,7 +159,6 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
           <p className="text-[10px] text-slate-500">
             Devices on this list will not trigger Unauthorized Device alerts. Persisted across restarts.
           </p>
-
           <div className="flex flex-wrap gap-2">
             {trustedMacs.map((mac) => (
               <div key={mac} className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded text-[10px] font-mono text-emerald-400">
@@ -189,7 +172,6 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
               <span className="text-[10px] text-slate-600 italic">No trusted MACs configured.</span>
             )}
           </div>
-
           <div className="flex gap-2">
             <input
               value={newMac}
@@ -213,12 +195,9 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
             <Activity className="w-4 h-4 text-orange-500" />
             <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Detection Thresholds</h3>
           </div>
-
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="space-y-2">
-              <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">
-                Deauth Threshold (packets)
-              </label>
+              <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Deauth Threshold (packets)</label>
               <input
                 type="number" min={2} max={50} value={deauthThreshold}
                 onChange={(e) => setDeauthThreshold(Number(e.target.value))}
@@ -227,9 +206,7 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
               <p className="text-[9px] text-slate-600">Deauth frames before DoS alert fires</p>
             </div>
             <div className="space-y-2">
-              <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">
-                Deauth Window (ms)
-              </label>
+              <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Deauth Window (ms)</label>
               <input
                 type="number" min={1000} max={30000} step={500} value={deauthWindowMs}
                 onChange={(e) => setDeauthWindowMs(Number(e.target.value))}
@@ -238,9 +215,7 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
               <p className="text-[9px] text-slate-600">Rolling time window for deauth counting</p>
             </div>
             <div className="space-y-2">
-              <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">
-                Alert Dedup Window (ms)
-              </label>
+              <label className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Alert Dedup Window (ms)</label>
               <input
                 type="number" min={1000} max={60000} step={1000} value={dedupWindowMs}
                 onChange={(e) => setDedupWindowMs(Number(e.target.value))}
@@ -248,40 +223,6 @@ export function SettingsTab({ customPrompt, onPromptChange, engineConfig, onSave
               />
               <p className="text-[9px] text-slate-600">Suppress duplicate alerts within this window</p>
             </div>
-          </div>
-        </section>
-
-        {/* ── AI Prompt ── */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <History className="w-4 h-4 text-sky-500" />
-              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">AI Cognitive Prompt</h3>
-            </div>
-            <button
-              onClick={() => onPromptChange(DEFAULT_PROMPT.trim())}
-              className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-[10px] font-bold text-slate-400 transition-colors"
-            >
-              <RotateCcw className="w-3 h-3" /> Reset
-            </button>
-          </div>
-
-          <div className="relative">
-            <textarea
-              value={customPrompt}
-              onChange={(e) => onPromptChange(e.target.value)}
-              className="w-full h-48 bg-slate-950 border border-slate-800 rounded-lg p-4 text-xs font-mono text-sky-400 focus:outline-none focus:border-sky-500/50 custom-scrollbar resize-none"
-            />
-            <div className="absolute bottom-3 right-3 flex items-center gap-2 px-2 py-1 bg-slate-900/80 rounded border border-slate-700 text-[10px] text-slate-500 font-mono">
-              <Activity className="w-3 h-3 text-emerald-500" /> Dynamic Injection Active
-            </div>
-          </div>
-
-          <div className="p-3 bg-slate-800/20 border border-slate-800 rounded-lg">
-            <p className="text-[9px] text-slate-500 font-mono">
-              <span className="text-sky-400">{"{{ALERTS}}"}</span> — last 10 alerts as JSON &nbsp;|&nbsp;
-              <span className="text-sky-400">{"{{DEVICES}}"}</span> — active device count
-            </p>
           </div>
         </section>
 

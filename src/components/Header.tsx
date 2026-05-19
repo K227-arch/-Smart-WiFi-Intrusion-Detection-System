@@ -110,7 +110,7 @@ export const Header = memo(function Header({
             )}
           />
           <span className="hidden xs:inline">
-            {isAnalyzing ? "Analyzing..." : "AI Insight"}
+            {isAnalyzing ? "Analyzing..." : "ML Insight"}
           </span>
         </button>
 

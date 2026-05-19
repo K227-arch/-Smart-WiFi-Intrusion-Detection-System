@@ -5,7 +5,6 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { GoogleGenAI } from "@google/genai";
 import { insforge } from "./lib/insforge";
 import { LoginPage } from "./pages/LoginPage";
 
@@ -28,7 +27,7 @@ import { NetworkTab } from "./tabs/NetworkTab";
 import { SnortTab } from "./tabs/SnortTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 
-import type { Device } from "./types";
+import type { Alert, Analytics, Device, MLResult } from "./types";
 
 export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
@@ -54,6 +53,124 @@ export default function App() {
   }
 
   return <Dashboard onSignOut={() => setIsAuthenticated(false)} />;
+}
+
+// ── Local ML-based insight generator ─────────────────────────────────────────
+function generateMlInsight(
+  alerts: Alert[],
+  devices: Device[],
+  analytics: Analytics | null,
+  mlResults: MLResult[]
+): string {
+  const lines: string[] = [];
+
+  // ── Threat summary ──────────────────────────────────────────────────────
+  const high = alerts.filter((a) => a.severity === "high").length;
+  const medium = alerts.filter((a) => a.severity === "medium").length;
+  const low = alerts.filter((a) => a.severity === "low").length;
+  const total = alerts.length;
+
+  lines.push("## Security Posture Assessment\n");
+
+  if (total === 0) {
+    lines.push("✅ **No active alerts.** Network posture is clean.\n");
+  } else {
+    const level = high > 0 ? "🔴 **CRITICAL**" : medium > 5 ? "🟠 **ELEVATED**" : "🟡 **MODERATE**";
+    lines.push(`**Threat Level:** ${level}`);
+    lines.push(`**Active Alerts:** ${total} total — ${high} critical, ${medium} medium, ${low} low\n`);
+  }
+
+  // ── Top attack types ────────────────────────────────────────────────────
+  if (analytics?.detectionCounts) {
+    const sorted = Object.entries(analytics.detectionCounts)
+      .filter(([, v]) => v > 0)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3);
+
+    if (sorted.length > 0) {
+      lines.push("**Top Detected Threats:**");
+      const labels: Record<string, string> = {
+        ROGUE_AP: "Rogue AP / Evil Twin",
+        DEAUTH_ATTACK: "Deauth Flood (DoS)",
+        MAC_SPOOFING: "MAC Spoofing",
+        UNAUTHORIZED_DEVICE: "Unauthorized Device",
+        CHANNEL_ANOMALY: "Channel Anomaly",
+        PORT_SCAN: "Port Scan",
+        BRUTE_FORCE: "Brute Force",
+        ANOMALY: "ML Anomaly",
+      };
+      sorted.forEach(([type, count]) => {
+        lines.push(`- ${labels[type] ?? type}: **${count}** detections`);
+      });
+      lines.push("");
+    }
+  }
+
+  // ── ML scoring summary ──────────────────────────────────────────────────
+  if (mlResults.length > 0) {
+    const malicious = mlResults.filter((r) => r.score >= 0.75);
+    const suspicious = mlResults.filter((r) => r.score >= 0.4 && r.score < 0.75);
+    const avgScore = mlResults.reduce((s, r) => s + r.score, 0) / mlResults.length;
+
+    lines.push("**ML Engine Analysis:**");
+    lines.push(`- Devices scored: **${mlResults.length}**`);
+    lines.push(`- Average anomaly score: **${(avgScore * 100).toFixed(1)}%**`);
+    if (malicious.length > 0) {
+      lines.push(`- 🔴 Malicious devices: **${malicious.length}** (score ≥ 75%)`);
+      malicious.slice(0, 3).forEach((r) => {
+        lines.push(`  - \`${r.mac}\` — score ${(r.score * 100).toFixed(0)}%, deauth ratio ${(r.features.deauthRatio * 100).toFixed(1)}%`);
+      });
+    }
+    if (suspicious.length > 0) {
+      lines.push(`- 🟠 Suspicious devices: **${suspicious.length}** (score 40–75%)`);
+    }
+    lines.push("");
+  }
+
+  // ── Device posture ──────────────────────────────────────────────────────
+  const trusted = devices.filter((d) => d.status === "trusted").length;
+  const blocked = devices.filter((d) => d.status === "blocked").length;
+  const unknown = devices.filter((d) => d.status === "unknown").length;
+
+  lines.push("**Device Registry:**");
+  lines.push(`- Total: **${devices.length}** — ${trusted} trusted, ${unknown} unknown, ${blocked} blocked`);
+  if (unknown > 10) {
+    lines.push(`- ⚠️ ${unknown} unclassified devices — review and trust or block via Device Registry`);
+  }
+  lines.push("");
+
+  // ── Recommendations ─────────────────────────────────────────────────────
+  lines.push("## Recommendations\n");
+
+  const recs: string[] = [];
+
+  if (high > 0) {
+    const rogueCount = alerts.filter((a) => a.type === "ROGUE_AP").length;
+    if (rogueCount > 0) recs.push(`**Investigate ${rogueCount} Rogue AP alert(s)** — verify all BSSIDs in Settings → Known Networks match your legitimate access points.`);
+    const deauthCount = alerts.filter((a) => a.type === "DEAUTH_ATTACK").length;
+    if (deauthCount > 0) recs.push(`**Deauth flood detected (${deauthCount} events)** — consider lowering the deauth threshold in Settings and enabling 802.11w (Management Frame Protection) on your APs.`);
+  }
+
+  if (mlResults.some((r) => r.score >= 0.75)) {
+    recs.push("**Block high-scoring ML devices** — navigate to Device Registry, filter by unknown, and block devices with high anomaly scores.");
+  }
+
+  if (unknown > 5) {
+    recs.push(`**Classify ${unknown} unknown devices** — add legitimate device MACs to the Trusted Whitelist in Settings to reduce false positives.`);
+  }
+
+  const fpTotal = Object.values(analytics?.falsePositiveCounts ?? {}).reduce((a, b) => a + b, 0);
+  if (fpTotal > 10) {
+    recs.push(`**Tune detection thresholds** — ${fpTotal} alerts were dismissed as false positives. Increase the dedup window or deauth threshold in Settings to reduce noise.`);
+  }
+
+  if (recs.length === 0) {
+    recs.push("Network posture is healthy. Continue monitoring and ensure known networks are configured in Settings.");
+  }
+
+  recs.forEach((r, i) => lines.push(`${i + 1}. ${r}`));
+
+  return lines.join("\n");
 }
 
 function Dashboard({ onSignOut }: { onSignOut: () => void }) {
@@ -93,35 +210,23 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
-  const [customPrompt, setCustomPrompt] = useState(
-    `You are a cybersecurity expert analyzing logs from a Wireless Intrusion Detection System (WIDS).
-Current Alerts: {{ALERTS}}
-Current Network Density: {{DEVICES}} devices detected.
 
-Provide a concise security posture assessment and 3 actionable recommendations for the network administrator.
-Keep it professional and technical but accessible. Format in Markdown.`.trim()
-  );
-
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-  const runAiAnalysis = useCallback(async () => {
+  // ── ML-based insight — no external API needed ─────────────────────────
+  const runAiAnalysis = useCallback(() => {
     setIsAnalyzing(true);
     setAiAnalysis(null);
-    try {
-      const prompt = customPrompt
-        .replace("{{ALERTS}}", JSON.stringify(alerts.slice(0, 10)))
-        .replace("{{DEVICES}}", String(devices.length));
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-      });
-      setAiAnalysis(response.text ?? "No analysis generated.");
-    } catch {
-      setAiAnalysis("Error running analysis. Check your GEMINI_API_KEY in the .env file.");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  }, [alerts, devices, customPrompt]);
+    // Small timeout so the spinner renders before the synchronous work
+    setTimeout(() => {
+      try {
+        const insight = generateMlInsight(alerts, devices, analytics, mlResults);
+        setAiAnalysis(insight);
+      } catch {
+        setAiAnalysis("Error generating analysis. Please try again.");
+      } finally {
+        setIsAnalyzing(false);
+      }
+    }, 150);
+  }, [alerts, devices, analytics, mlResults]);
 
   const handleTabChange = useCallback((tab: TabId) => {
     setSelectedTab(tab);
@@ -138,7 +243,6 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
     onSignOut();
   }, [onSignOut]);
 
-  // Only recompute when alerts array reference changes
   const highSeverityCount = useMemo(
     () => alerts.filter((a) => a.severity === "high").length,
     [alerts]
@@ -259,8 +363,6 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
               <Fragment key="settings">
                 <ErrorBoundary fallbackLabel="Settings Error">
                   <SettingsTab
-                    customPrompt={customPrompt}
-                    onPromptChange={setCustomPrompt}
                     engineConfig={engineConfig}
                     onSaveConfig={saveConfig}
                   />
