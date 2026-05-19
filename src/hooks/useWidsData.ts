@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { insforge } from "../lib/insforge";
-import type { Alert, Analytics, Device, EngineConfig, SystemStatus, TrafficBucket } from "../types";
+import type { Alert, Analytics, Device, EngineConfig, MLResult, SystemStatus, TrafficBucket } from "../types";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function rowToAlert(r: any): Alert {
@@ -35,6 +35,7 @@ export function useWidsData() {
   const [chartData, setChartData] = useState<TrafficBucket[]>([]);
   const [engineConfig, setEngineConfig] = useState<EngineConfig | null>(null);
   const [newAlertCount, setNewAlertCount] = useState(0);
+  const [mlResults, setMlResults] = useState<MLResult[]>([]);
   const startTime = useRef(Date.now());
 
   // ── initial data load ──────────────────────────────────────────────────────
@@ -103,6 +104,11 @@ export function useWidsData() {
         },
       });
     }
+
+    // Fetch ML results from local API
+    fetch("/api/ml-results").then((r) => r.json()).then((data) => {
+      if (Array.isArray(data)) setMlResults(data);
+    }).catch(() => {});
 
     // Build status
     setStatus({
@@ -246,6 +252,7 @@ export function useWidsData() {
     chartData,
     engineConfig,
     newAlertCount,
+    mlResults,
     clearAlertBadge,
     updateDeviceStatus,
     dismissAlert,

@@ -23,6 +23,7 @@ import { DevicesTab } from "./tabs/DevicesTab";
 import { AlertsTab } from "./tabs/AlertsTab";
 import { LiveTrafficTab } from "./tabs/LiveTrafficTab";
 import { AnalyticsTab } from "./tabs/AnalyticsTab";
+import { MLTab } from "./tabs/MLTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 
 import type { Device } from "./types";
@@ -62,6 +63,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
     chartData,
     engineConfig,
     newAlertCount,
+    mlResults,
     clearAlertBadge,
     updateDeviceStatus,
     dismissAlert,
@@ -69,6 +71,20 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
     saveConfig,
     refetch: fetchData,
   } = useWidsData();
+
+  const [currentUser, setCurrentUser] = useState<{ email: string; name?: string; avatar_url?: string } | null>(null);
+
+  useEffect(() => {
+    insforge.auth.getCurrentUser().then(({ data }) => {
+      if (data?.user) {
+        setCurrentUser({
+          email: data.user.email,
+          name: data.user.profile?.name ?? undefined,
+          avatar_url: data.user.profile?.avatar_url ?? undefined,
+        });
+      }
+    });
+  }, []);
 
   const [selectedTab, setSelectedTab] = useState<TabId>("dashboard");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -136,6 +152,8 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
         onToggleMenu={toggleMenu}
         onRunAnalysis={runAiAnalysis}
         onRefresh={fetchData}
+        user={currentUser}
+        onSignOut={handleSignOut}
       />
 
       <main className="flex-1 flex flex-col lg:grid lg:grid-cols-12 gap-0 overflow-hidden relative">
@@ -214,6 +232,13 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
                 </ErrorBoundary>
               </Fragment>
             )}
+            {selectedTab === "ml" && (
+              <Fragment key="ml">
+                <ErrorBoundary fallbackLabel="ML Engine Error">
+                  <MLTab analytics={analytics} mlResults={mlResults} />
+                </ErrorBoundary>
+              </Fragment>
+            )}
             {selectedTab === "settings" && (
               <Fragment key="settings">
                 <ErrorBoundary fallbackLabel="Settings Error">
@@ -256,12 +281,6 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
             {status?.monitoring ? "Engine Active" : "Engine Offline"}
           </span>
           <span className="text-sky-500 font-bold uppercase whitespace-nowrap">SALAMANDA v2.0</span>
-          <button
-            onClick={handleSignOut}
-            className="text-slate-500 hover:text-rose-400 font-bold uppercase transition-colors"
-          >
-            Sign Out
-          </button>
         </div>
       </footer>
 

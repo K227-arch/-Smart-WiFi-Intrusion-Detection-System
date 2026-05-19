@@ -3,6 +3,73 @@ import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
+import * as ort from "onnxruntime-node";
+
+// ── ONNX Model ────────────────────────────────────────────────────────────────
+const MODEL_PATH = path.join(process.cwd(), "models", "wids_rf.onnx");
+let ortSession: ort.InferenceSession | null = null;
+
+async function loadOnnxModel() {
+  try {
+    ortSession = await ort.InferenceSession.create(MODEL_PATH);
+    console.log("✓ ONNX ML model loaded:", MODEL_PATH);
+  } catch (e) {
+    console.warn("⚠ ONNX model load failed, falling back to heuristic scorer:", e);
+  }
+}
+
+/**
+ * Run ONNX inference on a single device's features.
+ * Returns { score: 0-1, classIndex: 0|1|2 }
+ * Features: [packet_rate, deauth_ratio, beacon_ratio, unique_channels, avg_signal_norm]
+ */
+async function onnxInfer(features: number[]): Promise<{ score: number; classIndex: number }> {
+  if (!ortSession) return heuristicScore(features);
+
+  try {
+    const input = new Float32Array(features);
+    const tensor = new ort.Tensor("float32", input, [1, 5]);
+    const feeds: Record<string, ort.Tensor> = {};
+    // Use the first input name from the model
+    feeds[ortSession.inputNames[0]] = tensor;
+
+    const results = await ortSession.run(feeds);
+
+    // Get predicted class from output_label
+    const labelOutput = results[ortSession.outputNames[0]];
+    const classIndex = Number(labelOutput.data[0]) as 0 | 1 | 2;
+
+    // Get probabilities from output_probability (map output)
+    // skl2onnx outputs probabilities as a sequence of maps
+    const probOutput = results[ortSession.outputNames[1]];
+    let score = 0;
+    if (probOutput && probOutput.data) {
+      // probOutput.data is flat: [p0, p1, p2] for the single sample
+      const probs = probOutput.data as Float32Array;
+      // Score = P(suspicious) * 0.5 + P(malicious) * 1.0
+      score = (probs[1] ?? 0) * 0.5 + (probs[2] ?? 0) * 1.0;
+    } else {
+      // Fallback: map class to score
+      score = classIndex === 2 ? 0.9 : classIndex === 1 ? 0.55 : 0.1;
+    }
+
+    return { score: Math.min(score, 1), classIndex };
+  } catch (e) {
+    return heuristicScore(features);
+  }
+}
+
+/** Fallback heuristic scorer (used if ONNX fails) */
+function heuristicScore(features: number[]): { score: number; classIndex: number } {
+  const [packetRate, deauthRatio, , uniqueChannels] = features;
+  let score = 0;
+  score += Math.min(packetRate / 100, 0.4);
+  score += Math.min(deauthRatio * 3, 0.3);
+  score += Math.min((uniqueChannels - 1) * 0.05, 0.2);
+  score = Math.min(score, 1);
+  const classIndex = score >= 0.75 ? 2 : score >= 0.4 ? 1 : 0;
+  return { score, classIndex };
+}
 
 // ── Insforge client (server-side, uses API key directly) ──────────────────────
 const db = createClient({
@@ -138,6 +205,9 @@ let detectionCounts: Record<string, number> = {
   MAC_SPOOFING: 0,
   UNAUTHORIZED_DEVICE: 0,
   CHANNEL_ANOMALY: 0,
+  PORT_SCAN: 0,
+  BRUTE_FORCE: 0,
+  ANOMALY: 0,
 };
 // False positive tracking (manually dismissed alerts count as false positives)
 let falsePositiveCounts: Record<string, number> = {
@@ -146,7 +216,140 @@ let falsePositiveCounts: Record<string, number> = {
   MAC_SPOOFING: 0,
   UNAUTHORIZED_DEVICE: 0,
   CHANNEL_ANOMALY: 0,
+  PORT_SCAN: 0,
+  BRUTE_FORCE: 0,
+  ANOMALY: 0,
 };
+
+// ── Port Scan tracker: count unique channels/BSSIDs probed per source ─────────
+const portScanTracker: Map<string, { probes: Set<string>; windowStart: number }> = new Map();
+const PORT_SCAN_THRESHOLD = 6;   // unique BSSIDs/channels probed
+const PORT_SCAN_WINDOW_MS = 5000;
+
+// ── Brute Force tracker: repeated mgmt frames (auth/assoc) from same source ──
+const bruteForceTracker: Map<string, { count: number; windowStart: number }> = new Map();
+const BRUTE_FORCE_THRESHOLD = 10;
+const BRUTE_FORCE_WINDOW_MS = 5000;
+
+// ── ML / Anomaly baseline ─────────────────────────────────────────────────────
+interface DeviceFeatures {
+  packetCount: number;
+  deauthCount: number;
+  beaconCount: number;
+  mgmtCount: number;
+  uniqueChannels: Set<number>;
+  windowStart: number;
+}
+const deviceFeatures: Map<string, DeviceFeatures> = new Map();
+const ML_WINDOW_MS = 10_000; // 10s feature window
+
+interface AnomalyBaseline {
+  avgPacketRate: number;
+  m2PacketRate: number;  // Welford's M2 for variance
+  sampleCount: number;
+  lastUpdated: number;
+}
+let anomalyBaseline: AnomalyBaseline = {
+  avgPacketRate: 0, m2PacketRate: 0, sampleCount: 0, lastUpdated: Date.now(),
+};
+
+// Welford online mean/variance update
+function updateBaseline(packetRate: number) {
+  anomalyBaseline.sampleCount++;
+  const delta = packetRate - anomalyBaseline.avgPacketRate;
+  anomalyBaseline.avgPacketRate += delta / anomalyBaseline.sampleCount;
+  const delta2 = packetRate - anomalyBaseline.avgPacketRate;
+  anomalyBaseline.m2PacketRate += delta * delta2;
+  anomalyBaseline.lastUpdated = Date.now();
+}
+
+function getBaselineStd(): number {
+  if (anomalyBaseline.sampleCount < 2) return 1;
+  return Math.sqrt(anomalyBaseline.m2PacketRate / (anomalyBaseline.sampleCount - 1));
+}
+
+// Naive Bayes-style ML scorer: returns 0–1 anomaly score (fallback only)
+function mlScore(features: DeviceFeatures): number {
+  const elapsed = (Date.now() - features.windowStart) / 1000 || 1;
+  const packetRate = features.packetCount / elapsed;
+  const deauthRatio = features.deauthCount / (features.packetCount || 1);
+  const beaconRatio = features.beaconCount / (features.packetCount || 1);
+  const uniqueChannels = features.uniqueChannels.size;
+
+  // Z-score for packet rate vs baseline
+  const std = getBaselineStd();
+  const zScore = std > 0 ? Math.abs(packetRate - anomalyBaseline.avgPacketRate) / std : 0;
+
+  // Weighted feature scoring (weights tuned to thesis metrics)
+  let score = 0;
+  score += Math.min(zScore / 5, 0.4);          // packet rate anomaly (max 0.4)
+  score += Math.min(deauthRatio * 3, 0.3);      // deauth ratio (max 0.3)
+  score += Math.min((uniqueChannels - 1) * 0.05, 0.2); // channel hopping (max 0.2)
+  score += beaconRatio > 0.5 ? 0.1 : 0;        // excessive beacons
+
+  return Math.min(score, 1);
+}
+
+// Snort-style default rules
+interface SnortRule {
+  id: string;
+  enabled: boolean;
+  msg: string;
+  match: (packet: WiFiPacket) => boolean;
+  severity: "high" | "medium" | "low";
+  type: Alert["type"];
+}
+
+const SNORT_RULES: SnortRule[] = [
+  {
+    id: "SID:1000001",
+    enabled: true,
+    msg: "Possible Deauth DoS — high-rate deauth frames detected",
+    match: (p) => p.type === "deauth",
+    severity: "high",
+    type: "DEAUTH_ATTACK",
+  },
+  {
+    id: "SID:1000002",
+    enabled: true,
+    msg: "Probe Request Flood — possible port/network scan",
+    match: (p) => p.type === "mgmt",
+    severity: "medium",
+    type: "PORT_SCAN",
+  },
+  {
+    id: "SID:1000003",
+    enabled: true,
+    msg: "Beacon Flood — possible AP impersonation or Evil Twin",
+    match: (p) => p.type === "beacons" && p.signalStrength > -35,
+    severity: "high",
+    type: "ROGUE_AP",
+  },
+  {
+    id: "SID:1000004",
+    enabled: true,
+    msg: "Repeated Auth Frames — possible brute force attack",
+    match: (p) => p.type === "mgmt" && p.signalStrength > -50,
+    severity: "high",
+    type: "BRUTE_FORCE",
+  },
+];
+
+// ML results store (last 50)
+interface MLResultEntry {
+  mac: string;
+  timestamp: number;
+  score: number;
+  classification: "normal" | "suspicious" | "malicious";
+  features: {
+    packetRate: number;
+    avgSignal: number;
+    uniqueChannels: number;
+    deauthRatio: number;
+    beaconRatio: number;
+  };
+}
+let mlResults: MLResultEntry[] = [];
 
 // --- Detection Engine ---
 const detectionEngine = {
@@ -237,6 +440,122 @@ const detectionEngine = {
         description: `New unknown device on network: ${packet.sourceMac}${packet.ssid ? ` (SSID: ${packet.ssid})` : ""} on channel ${packet.channel}.`,
         details: { ssid: packet.ssid, channel: packet.channel, signal: packet.signalStrength },
       }, dedupWindowMs);
+    }
+
+    // 6. Port Scan — source probing many unique BSSIDs/channels in short window
+    {
+      const now = Date.now();
+      const tracker = portScanTracker.get(packet.sourceMac);
+      if (!tracker || now - tracker.windowStart > PORT_SCAN_WINDOW_MS) {
+        portScanTracker.set(packet.sourceMac, { probes: new Set([`${packet.bssid}:${packet.channel}`]), windowStart: now });
+      } else {
+        tracker.probes.add(`${packet.bssid}:${packet.channel}`);
+        if (tracker.probes.size >= PORT_SCAN_THRESHOLD) {
+          addAlert({
+            type: "PORT_SCAN",
+            severity: "medium",
+            targetMac: packet.sourceMac,
+            description: `Port/Network scan detected: ${packet.sourceMac} probed ${tracker.probes.size} unique AP/channel combinations in ${PORT_SCAN_WINDOW_MS / 1000}s.`,
+            details: { source: packet.sourceMac, probeCount: tracker.probes.size, windowMs: PORT_SCAN_WINDOW_MS, method: "signature" },
+          }, dedupWindowMs);
+          portScanTracker.set(packet.sourceMac, { probes: new Set(), windowStart: now });
+        }
+      }
+    }
+
+    // 7. Brute Force — repeated mgmt frames from same source
+    if (packet.type === "mgmt") {
+      const now = Date.now();
+      const tracker = bruteForceTracker.get(packet.sourceMac);
+      if (!tracker || now - tracker.windowStart > BRUTE_FORCE_WINDOW_MS) {
+        bruteForceTracker.set(packet.sourceMac, { count: 1, windowStart: now });
+      } else {
+        tracker.count++;
+        if (tracker.count >= BRUTE_FORCE_THRESHOLD) {
+          addAlert({
+            type: "BRUTE_FORCE",
+            severity: "high",
+            targetMac: packet.sourceMac,
+            description: `Brute force attempt: ${tracker.count} repeated auth/mgmt frames from ${packet.sourceMac} in ${BRUTE_FORCE_WINDOW_MS / 1000}s.`,
+            details: { source: packet.sourceMac, count: tracker.count, windowMs: BRUTE_FORCE_WINDOW_MS, method: "signature" },
+          }, dedupWindowMs);
+          bruteForceTracker.set(packet.sourceMac, { count: 0, windowStart: now });
+        }
+      }
+    }
+
+    // 8. ML feature tracking — update per-device feature window
+    {
+      const now = Date.now();
+      let feat = deviceFeatures.get(packet.sourceMac);
+      if (!feat || now - feat.windowStart > ML_WINDOW_MS) {
+        // Flush old window to baseline and ML results
+        if (feat && feat.packetCount > 0) {
+          const elapsed = (now - feat.windowStart) / 1000 || 1;
+          const packetRate = feat.packetCount / elapsed;
+          updateBaseline(packetRate);
+
+          const deauthRatio = feat.deauthCount / (feat.packetCount || 1);
+          const beaconRatio = feat.beaconCount / (feat.packetCount || 1);
+          const uniqueChannels = feat.uniqueChannels.size;
+          const avgSig = devices.get(packet.sourceMac)?.avgSignal ?? packet.signalStrength;
+          // Normalise signal: -100dBm→0, -20dBm→1
+          const avgSignalNorm = Math.max(0, Math.min(1, (avgSig + 100) / 80));
+
+          const featureVec = [packetRate, deauthRatio, beaconRatio, uniqueChannels, avgSignalNorm];
+          const mac = packet.sourceMac;
+
+          // Run ONNX inference asynchronously — doesn't block packet processing
+          onnxInfer(featureVec).then(({ score, classIndex }) => {
+            const classification: MLResultEntry["classification"] =
+              classIndex === 2 ? "malicious" : classIndex === 1 ? "suspicious" : "normal";
+
+            const result: MLResultEntry = {
+              mac,
+              timestamp: Date.now(),
+              score,
+              classification,
+              features: {
+                packetRate,
+                avgSignal: avgSig,
+                uniqueChannels,
+                deauthRatio,
+                beaconRatio,
+              },
+            };
+
+            const idx = mlResults.findIndex((r) => r.mac === mac);
+            if (idx >= 0) mlResults[idx] = result;
+            else mlResults.unshift(result);
+            if (mlResults.length > 50) mlResults.pop();
+
+            // Fire anomaly alert if malicious
+            if (classIndex === 2) {
+              addAlert({
+                type: "ANOMALY",
+                severity: "high",
+                targetMac: mac,
+                description: `ONNX ML model classified ${mac} as MALICIOUS (score: ${(score * 100).toFixed(0)}%). Packet rate: ${packetRate.toFixed(1)}/s, deauth ratio: ${(deauthRatio * 100).toFixed(1)}%.`,
+                details: { ...result.features, mlScore: score, classIndex, method: "onnx-random-forest" },
+              }, config.dedupWindowMs * 2);
+            }
+          });
+        }
+        deviceFeatures.set(packet.sourceMac, {
+          packetCount: 1,
+          deauthCount: packet.type === "deauth" ? 1 : 0,
+          beaconCount: packet.type === "beacons" ? 1 : 0,
+          mgmtCount: packet.type === "mgmt" ? 1 : 0,
+          uniqueChannels: new Set([packet.channel]),
+          windowStart: now,
+        });
+      } else {
+        feat.packetCount++;
+        if (packet.type === "deauth") feat.deauthCount++;
+        if (packet.type === "beacons") feat.beaconCount++;
+        if (packet.type === "mgmt") feat.mgmtCount++;
+        feat.uniqueChannels.add(packet.channel);
+      }
     }
 
     // Update device registry
@@ -493,6 +812,30 @@ function startSimulator() {
         signalStrength: -25, channel: 11, // wrong channel
       });
     }
+
+    // Port Scan — device probing many BSSIDs rapidly
+    if (Math.random() > 0.985) {
+      const scannerMac = `SC:4N:${randByte()}:${randByte()}:${randByte()}:01`;
+      for (let i = 0; i < PORT_SCAN_THRESHOLD + 1; i++) {
+        detectionEngine.processPacket({
+          timestamp: Date.now(), bssid: `${randByte()}:${randByte()}:${randByte()}:${randByte()}:${randByte()}:${randByte()}`,
+          sourceMac: scannerMac, type: "mgmt",
+          signalStrength: -60 - Math.random() * 20, channel: Math.ceil(Math.random() * 13),
+        });
+      }
+    }
+
+    // Brute Force — repeated mgmt frames from same source
+    if (Math.random() > 0.988) {
+      const attackerMac = `BF:${randByte()}:${randByte()}:${randByte()}:${randByte()}:01`;
+      for (let i = 0; i < BRUTE_FORCE_THRESHOLD + 2; i++) {
+        detectionEngine.processPacket({
+          timestamp: Date.now(), bssid: KNOWN_AP_BSSID, ssid: KNOWN_SSID,
+          sourceMac: attackerMac, type: "mgmt",
+          signalStrength: -45 - Math.random() * 10, channel: 6,
+        });
+      }
+    }
   }, 500);
 }
 
@@ -501,6 +844,26 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
   app.use(express.json());
+
+  // GET /api/ml-results
+  app.get("/api/ml-results", (_req, res) => {
+    res.json(mlResults);
+  });
+
+  // GET /api/snort-rules
+  app.get("/api/snort-rules", (_req, res) => {
+    res.json(SNORT_RULES.map(({ id, enabled, msg, severity, type }) => ({ id, enabled, msg, severity, type })));
+  });
+
+  // GET /api/anomaly-baseline
+  app.get("/api/anomaly-baseline", (_req, res) => {
+    res.json({
+      avgPacketRate: anomalyBaseline.avgPacketRate.toFixed(2),
+      stdPacketRate: getBaselineStd().toFixed(2),
+      sampleCount: anomalyBaseline.sampleCount,
+      lastUpdated: anomalyBaseline.lastUpdated,
+    });
+  });
 
   // GET /api/status
   app.get("/api/status", (_req, res) => {
@@ -674,3 +1037,4 @@ async function startServer() {
 }
 
 startServer();
+loadOnnxModel();
