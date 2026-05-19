@@ -6,6 +6,7 @@ import {
   Settings as SettingsIcon,
   Shield,
 } from "lucide-react";
+import { memo, useMemo } from "react";
 import { cn, formatNumber, formatUptime } from "../lib/utils";
 import type { Device, SystemStatus } from "../types";
 import { NavButton } from "./ui/NavButton";
@@ -22,7 +23,7 @@ interface SidebarProps {
   onTabChange: (tab: TabId) => void;
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   selectedTab,
   isMenuOpen,
   newAlertCount,
@@ -30,6 +31,12 @@ export function Sidebar({
   status,
   onTabChange,
 }: SidebarProps) {
+  // Derive counts once — don't recompute on every render
+  const trustedCount = useMemo(() => devices.filter((d) => d.status === "trusted").length, [devices]);
+  const trustedProgress = useMemo(
+    () => (devices.length > 0 ? (trustedCount / devices.length) * 100 : 0),
+    [trustedCount, devices.length]
+  );
   return (
     <aside
       className={cn(
@@ -100,12 +107,8 @@ export function Sidebar({
           />
           <SidebarStat
             label="Trusted Devices"
-            value={`${devices.filter((d) => d.status === "trusted").length} / ${devices.length}`}
-            progress={
-              devices.length > 0
-                ? (devices.filter((d) => d.status === "trusted").length / devices.length) * 100
-                : 0
-            }
+            value={`${trustedCount} / ${devices.length}`}
+            progress={trustedProgress}
             color="bg-emerald-500"
           />
           <SidebarStat
@@ -126,4 +129,4 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
+});

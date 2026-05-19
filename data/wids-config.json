@@ -1,0 +1,15 @@
+{
+  "knownNetworks": [
+    {
+      "ssid": "Enterprise_Secure_WiFi",
+      "bssid": "DE:AD:BE:EF:00:01",
+      "channel": 6
+    }
+  ],
+  "trustedMacs": [
+    "AA:BB:CC:DD:EE:FF"
+  ],
+  "deauthThreshold": 5,
+  "deauthWindowMs": 3000,
+  "dedupWindowMs": 10000
+}

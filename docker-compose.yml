@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  salamanda-wids:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: salamanda-wids
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    volumes:
+      - wids-data:/app/data
+
+volumes:
+  wids-data:
+    driver: local
