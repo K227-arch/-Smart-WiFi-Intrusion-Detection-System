@@ -2,6 +2,14 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
+import { createClient } from "@insforge/sdk";
+
+// ── Insforge client (server-side, uses API key directly) ──────────────────────
+const db = createClient({
+  baseUrl: "https://bh9n4s8r.us-east.insforge.app",
+  anonKey:
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo",
+});
 
 // --- Types ---
 interface WiFiPacket {
@@ -250,6 +258,20 @@ const detectionEngine = {
       devices.set(packet.sourceMac, newDevice);
       // Push new device to clients immediately — no poll needed
       broadcastDevice(newDevice);
+
+      // ── Write new device to Insforge (triggers realtime device_update event) ──
+      db.database.from("devices").insert([{
+        mac: newDevice.mac,
+        first_seen: newDevice.firstSeen,
+        last_seen: newDevice.lastSeen,
+        status: newDevice.status,
+        ssid: newDevice.ssid ?? null,
+        avg_signal: newDevice.avgSignal,
+      }]).then(({ error }) => {
+        if (error && !error.message?.includes("duplicate")) {
+          console.error("Insforge device insert error:", error);
+        }
+      });
     }
   },
 };
@@ -260,6 +282,18 @@ function updateTrafficBucket(packet: WiFiPacket) {
     if (currentBucket) {
       trafficBuckets.push(currentBucket);
       if (trafficBuckets.length > 20) trafficBuckets.shift();
+
+      // ── Persist completed bucket to Insforge ──
+      const bucket = currentBucket;
+      db.database.from("traffic_buckets").insert([{
+        time: bucket.time,
+        data_count: bucket.data,
+        beacons_count: bucket.beacons,
+        deauth_count: bucket.deauth,
+        mgmt_count: bucket.mgmt,
+      }]).then(({ error }) => {
+        if (error) console.error("Insforge traffic bucket insert error:", error);
+      });
     }
     bucketStartTime = now;
     const label = new Date(now).toLocaleTimeString("en-US", {
@@ -294,8 +328,34 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
 
   saveAlerts(alerts);
 
+  // ── Write to Insforge DB (triggers realtime broadcast to frontend) ──
+  db.database.from("alerts").insert([{
+    id: newAlert.id,
+    timestamp: newAlert.timestamp,
+    type: newAlert.type,
+    severity: newAlert.severity,
+    description: newAlert.description,
+    target_mac: newAlert.targetMac,
+    details: newAlert.details,
+    dismissed: false,
+  }]).then(({ error }) => {
+    if (error) console.error("Insforge alert insert error:", error);
+  });
+
+  // Update detection_stats running totals
+  db.database.from("detection_stats").select().eq("id", 1).maybeSingle().then(({ data }) => {
+    if (!data) return;
+    const dc = { ...(data.detection_counts ?? {}), [alertData.type]: (data.detection_counts?.[alertData.type] ?? 0) + 1 };
+    db.database.from("detection_stats").update({
+      detection_counts: dc,
+      total_packets_processed: totalPacketsProcessed,
+      updated_at: new Date().toISOString(),
+    }).eq("id", 1).then(({ error }) => {
+      if (error) console.error("Insforge stats update error:", error);
+    });
+  });
+
   // Broadcast alert using named SSE event type "alert"
-  // Clients can listen with es.addEventListener("alert", ...) — no packet noise
   const payload = JSON.stringify(newAlert);
   sseClients.forEach((client) => client.write(`event: alert\ndata: ${payload}\n\n`));
 }
@@ -600,6 +660,16 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`SALAMANDA WIDS running on http://localhost:${PORT}`);
     startSimulator();
+
+    // ── Sync packet count to Insforge every 30s ──
+    setInterval(() => {
+      db.database.from("detection_stats").update({
+        total_packets_processed: totalPacketsProcessed,
+        updated_at: new Date().toISOString(),
+      }).eq("id", 1).then(({ error }) => {
+        if (error) console.error("Insforge stats sync error:", error);
+      });
+    }, 30_000);
   });
 }
 
