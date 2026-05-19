@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Fragment, memo, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
+import { insforge } from "./lib/insforge";
+import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
 import { formatUptime, formatNumber, cn } from "./lib/utils";
@@ -26,6 +28,32 @@ import { SettingsTab } from "./tabs/SettingsTab";
 import type { Device } from "./types";
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  useEffect(() => {
+    insforge.auth.getCurrentUser().then(({ data }) => {
+      setIsAuthenticated(!!data?.user);
+      setAuthChecked(true);
+    });
+  }, []);
+
+  if (!authChecked) {
+    return (
+      <div className="h-screen w-full bg-slate-950 flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={() => setIsAuthenticated(true)} />;
+  }
+
+  return <Dashboard onSignOut={() => setIsAuthenticated(false)} />;
+}
+
+function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const {
     alerts,
     devices,
@@ -86,6 +114,11 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
   const toggleMenu = useCallback(() => setIsMenuOpen((v) => !v), []);
   const closeMenu = useCallback(() => setIsMenuOpen(false), []);
   const exportLogs = useCallback(() => window.open("/api/alerts/export", "_blank"), []);
+
+  const handleSignOut = useCallback(async () => {
+    await insforge.auth.signOut();
+    onSignOut();
+  }, [onSignOut]);
 
   // Only recompute when alerts array reference changes
   const highSeverityCount = useMemo(
@@ -223,6 +256,12 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
             {status?.monitoring ? "Engine Active" : "Engine Offline"}
           </span>
           <span className="text-sky-500 font-bold uppercase whitespace-nowrap">SALAMANDA v2.0</span>
+          <button
+            onClick={handleSignOut}
+            className="text-slate-500 hover:text-rose-400 font-bold uppercase transition-colors"
+          >
+            Sign Out
+          </button>
         </div>
       </footer>
 

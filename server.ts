@@ -44,8 +44,10 @@ interface EngineConfig {
 }
 
 // --- Persistence helpers ---
-const CONFIG_FILE = path.join(process.cwd(), "wids-config.json");
-const ALERTS_FILE = path.join(process.cwd(), "wids-alerts.json");
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const CONFIG_FILE = path.join(DATA_DIR, "wids-config.json");
+const ALERTS_FILE = path.join(DATA_DIR, "wids-alerts.json");
 
 function loadConfig(): EngineConfig {
   try {
@@ -235,15 +237,19 @@ const detectionEngine = {
       existing.lastSeen = Date.now();
       existing.avgSignal = Math.round((existing.avgSignal + packet.signalStrength) / 2);
       if (packet.ssid && !existing.ssid) existing.ssid = packet.ssid;
+      // No broadcast on update — lastSeen/signal changes are noise
     } else {
-      devices.set(packet.sourceMac, {
+      const newDevice: Device = {
         mac: packet.sourceMac,
         firstSeen: Date.now(),
         lastSeen: Date.now(),
         status: trustedMacs.has(packet.sourceMac) ? "trusted" : "unknown",
         ssid: packet.ssid,
         avgSignal: packet.signalStrength,
-      });
+      };
+      devices.set(packet.sourceMac, newDevice);
+      // Push new device to clients immediately — no poll needed
+      broadcastDevice(newDevice);
     }
   },
 };
@@ -300,6 +306,12 @@ function broadcastPacket(packet: WiFiPacket) {
   // Use named SSE event type "packet" so alert-only listeners can ignore these
   const payload = JSON.stringify(packet);
   sseClients.forEach((client) => client.write(`event: packet\ndata: ${payload}\n\n`));
+}
+
+function broadcastDevice(device: Device) {
+  if (sseClients.length === 0) return;
+  const payload = JSON.stringify(device);
+  sseClients.forEach((client) => client.write(`event: device\ndata: ${payload}\n\n`));
 }
 
 // --- Simulator ---
@@ -476,9 +488,12 @@ async function startServer() {
     }
     const device = devices.get(mac);
     if (!device) {
-      devices.set(mac, { mac, status, firstSeen: Date.now(), lastSeen: Date.now(), avgSignal: 0 });
+      const newDevice: Device = { mac, status, firstSeen: Date.now(), lastSeen: Date.now(), avgSignal: 0 };
+      devices.set(mac, newDevice);
+      broadcastDevice(newDevice);
     } else {
       device.status = status;
+      broadcastDevice(device);
     }
     if (status === "trusted") {
       trustedMacs.add(mac);

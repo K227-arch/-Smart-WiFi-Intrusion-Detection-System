@@ -1,5 +1,6 @@
 import { Download, ShieldCheck } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+import { memo, useMemo } from "react";
 import { format } from "date-fns";
 import { cn } from "../lib/utils";
 import { ALERT_TYPE_META } from "../lib/alertMeta";

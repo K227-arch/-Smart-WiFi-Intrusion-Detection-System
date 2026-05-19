@@ -1,4 +1,5 @@
 import { BrainCircuit, Menu, RefreshCw, ShieldAlert, X } from "lucide-react";
+import { memo } from "react";
 import { motion } from "motion/react";
 import { cn } from "../lib/utils";
 import type { SystemStatus } from "../types";
@@ -14,7 +15,7 @@ interface HeaderProps {
   onRefresh: () => void;
 }
 
-export function Header({
+export const Header = memo(function Header({
   status,
   highSeverityCount,
   isAnalyzing,
@@ -106,4 +107,4 @@ export function Header({
       </div>
     </nav>
   );
-}
+});
