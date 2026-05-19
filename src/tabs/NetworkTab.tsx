@@ -89,6 +89,18 @@ export function NetworkTab() {
       {/* Overview */}
       {subTab === "overview" && stats && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 shrink-0">
+          {/* Cloud mode notice */}
+          {!stats.isLiveCapture && (
+            <div className="sm:col-span-2 flex items-start gap-3 p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">Simulator / Cloud Mode</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  Live packet capture requires direct hardware access. ARP, Flow, and DNS tables populate only when running locally via Docker or <code className="font-mono bg-slate-800 px-1 rounded">sudo npm run dev</code>.
+                </p>
+              </div>
+            </div>
+          )}
           {/* Capture status */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
             <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">

@@ -10,8 +10,10 @@ services:
       - "3000:3000"
     environment:
       NODE_ENV: production
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       APP_URL: ${APP_URL:-http://localhost:3000}
+      # Set your wireless interface here for live capture (requires --privileged)
+      CAPTURE_IFACE: ${CAPTURE_IFACE:-en0}
     env_file:
       - .env
     restart: unless-stopped
@@ -20,7 +22,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     volumes:
       - wids-data:/app/data
 

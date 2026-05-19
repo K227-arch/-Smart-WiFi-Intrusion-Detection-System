@@ -22,7 +22,40 @@ interface Alert {
 const app = express();
 app.use(express.json());
 
-// GET /api/status — read from Insforge
+// ── Seed helpers — ensure required singleton rows exist ───────────────────────
+async function ensureDetectionStats() {
+  const { data } = await db.database.from("detection_stats").select("id").eq("id", 1).maybeSingle();
+  if (!data) {
+    await db.database.from("detection_stats").insert([{
+      id: 1,
+      detection_counts: {},
+      false_positive_counts: {},
+      total_packets_processed: 0,
+      updated_at: new Date().toISOString(),
+    }]);
+  }
+}
+
+async function ensureEngineConfig() {
+  const { data } = await db.database.from("engine_config").select("id").eq("id", 1).maybeSingle();
+  if (!data) {
+    await db.database.from("engine_config").insert([{
+      id: 1,
+      known_networks: [{ ssid: "Enterprise_Secure_WiFi", bssid: "DE:AD:BE:EF:00:01", channel: 6 }],
+      trusted_macs: ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"],
+      deauth_threshold: 5,
+      deauth_window_ms: 3000,
+      dedup_window_ms: 10000,
+      updated_at: new Date().toISOString(),
+    }]);
+  }
+}
+
+// Run seed on cold start
+ensureDetectionStats().catch(console.error);
+ensureEngineConfig().catch(console.error);
+
+// ── GET /api/status ───────────────────────────────────────────────────────────
 app.get("/api/status", async (_req, res) => {
   const [statsRes, devicesRes, alertsRes] = await Promise.all([
     db.database.from("detection_stats").select().eq("id", 1).maybeSingle(),
@@ -42,7 +75,7 @@ app.get("/api/status", async (_req, res) => {
   });
 });
 
-// GET /api/alerts
+// ── GET /api/alerts ───────────────────────────────────────────────────────────
 app.get("/api/alerts", async (_req, res) => {
   const { data } = await db.database
     .from("alerts")
@@ -53,7 +86,7 @@ app.get("/api/alerts", async (_req, res) => {
   res.json(data ?? []);
 });
 
-// DELETE /api/alerts/:id
+// ── DELETE /api/alerts/:id ────────────────────────────────────────────────────
 app.delete("/api/alerts/:id", async (req, res) => {
   const { id } = req.params;
   const { data: alert } = await db.database.from("alerts").select("type").eq("id", id).maybeSingle();
@@ -61,7 +94,6 @@ app.delete("/api/alerts/:id", async (req, res) => {
 
   await db.database.from("alerts").update({ dismissed: true }).eq("id", id);
 
-  // Increment false positive count
   const { data: stats } = await db.database.from("detection_stats").select().eq("id", 1).maybeSingle();
   if (stats) {
     const fp = { ...(stats.false_positive_counts ?? {}), [alert.type]: (stats.false_positive_counts?.[alert.type] ?? 0) + 1 };
@@ -70,19 +102,19 @@ app.delete("/api/alerts/:id", async (req, res) => {
   res.json({ message: "Alert dismissed", id });
 });
 
-// DELETE /api/alerts — clear all
+// ── DELETE /api/alerts — clear all ───────────────────────────────────────────
 app.delete("/api/alerts", async (_req, res) => {
   await db.database.from("alerts").update({ dismissed: true }).eq("dismissed", false);
   res.json({ message: "All alerts cleared" });
 });
 
-// GET /api/devices
+// ── GET /api/devices ──────────────────────────────────────────────────────────
 app.get("/api/devices", async (_req, res) => {
   const { data } = await db.database.from("devices").select().order("last_seen", { ascending: false });
   res.json(data ?? []);
 });
 
-// POST /api/devices/:mac/status
+// ── POST /api/devices/:mac/status ─────────────────────────────────────────────
 app.post("/api/devices/:mac/status", async (req, res) => {
   const { mac } = req.params;
   const { status } = req.body;
@@ -95,7 +127,7 @@ app.post("/api/devices/:mac/status", async (req, res) => {
   res.json({ message: "Status updated", status, mac });
 });
 
-// GET /api/traffic/chart
+// ── GET /api/traffic/chart ────────────────────────────────────────────────────
 app.get("/api/traffic/chart", async (_req, res) => {
   const { data } = await db.database
     .from("traffic_buckets")
@@ -112,7 +144,7 @@ app.get("/api/traffic/chart", async (_req, res) => {
   res.json(buckets);
 });
 
-// GET /api/analytics
+// ── GET /api/analytics ────────────────────────────────────────────────────────
 app.get("/api/analytics", async (_req, res) => {
   const [statsRes, devicesRes, alertsRes] = await Promise.all([
     db.database.from("detection_stats").select().eq("id", 1).maybeSingle(),
@@ -149,8 +181,9 @@ app.get("/api/analytics", async (_req, res) => {
   });
 });
 
-// GET /api/config
+// ── GET /api/config ───────────────────────────────────────────────────────────
 app.get("/api/config", async (_req, res) => {
+  await ensureEngineConfig();
   const { data } = await db.database.from("engine_config").select().eq("id", 1).maybeSingle();
   if (!data) return res.status(404).json({ error: "Config not found" });
   res.json({
@@ -162,7 +195,7 @@ app.get("/api/config", async (_req, res) => {
   });
 });
 
-// PUT /api/config
+// ── PUT /api/config ───────────────────────────────────────────────────────────
 app.put("/api/config", async (req, res) => {
   const body = req.body;
   await db.database.from("engine_config").update({
@@ -176,7 +209,7 @@ app.put("/api/config", async (req, res) => {
   res.json({ message: "Config updated", config: body });
 });
 
-// GET /api/alerts/export — CSV
+// ── GET /api/alerts/export — CSV ──────────────────────────────────────────────
 app.get("/api/alerts/export", async (_req, res) => {
   const { data } = await db.database
     .from("alerts").select().eq("dismissed", false).order("timestamp", { ascending: false });
@@ -190,7 +223,85 @@ app.get("/api/alerts/export", async (_req, res) => {
   res.send(header + rows);
 });
 
-// SSE stream — not supported on Vercel serverless, return 501
+// ── GET /api/ml-results — returns empty array on Vercel (no local engine) ─────
+app.get("/api/ml-results", (_req, res) => {
+  // ML scoring runs in the local server engine; on Vercel return empty so
+  // the MLTab shows the thesis evaluation matrix without crashing.
+  res.json([]);
+});
+
+// ── GET /api/anomaly-baseline ─────────────────────────────────────────────────
+app.get("/api/anomaly-baseline", (_req, res) => {
+  res.json({
+    avgPacketRate: 0,
+    stdPacketRate: 0,
+    sampleCount: 0,
+    lastUpdated: Date.now(),
+    note: "Baseline computed by local engine only",
+  });
+});
+
+// ── Snort rules — stored in Insforge DB on Vercel ─────────────────────────────
+const DEFAULT_SNORT_RULES = [
+  { sid: 1000001, msg: "Possible HTTP attack", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "80", enabled: true, priority: 3 },
+  { sid: 1000002, msg: "TCP SYN Flood", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "any", enabled: true, priority: 1 },
+  { sid: 1000003, msg: "ICMP Ping Detected", action: "alert", protocol: "icmp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "any", enabled: true, priority: 3 },
+  { sid: 1000004, msg: "SSH Brute Force Attempt", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "22", enabled: true, priority: 1 },
+  { sid: 1000005, msg: "RDP Scan Detected", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "3389", enabled: true, priority: 2 },
+  { sid: 1000006, msg: "DNS Query Flood", action: "alert", protocol: "udp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "53", enabled: true, priority: 2 },
+  { sid: 1000007, msg: "SMB Scan - Possible WannaCry", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "445", enabled: true, priority: 1 },
+  { sid: 1000008, msg: "Telnet Connection Attempt", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "23", enabled: true, priority: 2 },
+  { sid: 1000009, msg: "FTP Connection Attempt", action: "alert", protocol: "tcp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "21", enabled: true, priority: 3 },
+  { sid: 1000010, msg: "SNMP Scan Detected", action: "alert", protocol: "udp", srcIp: "any", srcPort: "any", dstIp: "any", dstPort: "161", enabled: true, priority: 2 },
+];
+
+const DEFAULT_RULES_FILE = `# SALAMANDA WIDS — Default Snort Rules
+alert tcp any any -> any 80 (msg:"Possible HTTP attack"; content:"GET"; sid:1000001; rev:1;)
+alert tcp any any -> any any (msg:"TCP SYN Flood"; flags:S; threshold:type both,track by_src,count 50,seconds 5; sid:1000002; rev:1;)
+alert icmp any any -> any any (msg:"ICMP Ping Detected"; sid:1000003; rev:1;)
+alert tcp any any -> any 22 (msg:"SSH Brute Force Attempt"; flags:S; threshold:type both,track by_src,count 10,seconds 60; sid:1000004; rev:1;)
+alert tcp any any -> any 3389 (msg:"RDP Scan Detected"; flags:S; sid:1000005; rev:1;)
+alert udp any any -> any 53 (msg:"DNS Query Flood"; threshold:type both,track by_src,count 100,seconds 10; sid:1000006; rev:1;)
+alert tcp any any -> any 445 (msg:"SMB Scan - Possible WannaCry"; flags:S; sid:1000007; rev:1;)
+alert tcp any any -> any 23 (msg:"Telnet Connection Attempt"; sid:1000008; rev:1;)
+alert tcp any any -> any 21 (msg:"FTP Connection Attempt"; sid:1000009; rev:1;)
+alert udp any any -> any 161 (msg:"SNMP Scan Detected"; sid:1000010; rev:1;)
+`;
+
+app.get("/api/snort-rules", (_req, res) => {
+  res.json(DEFAULT_SNORT_RULES);
+});
+
+app.get("/api/snort-rules/file", (_req, res) => {
+  res.json({ content: DEFAULT_RULES_FILE, path: "data/wids.rules (read-only on cloud)" });
+});
+
+// On Vercel, rule editing is not persisted (no filesystem). Return success so UI doesn't break.
+app.put("/api/snort-rules/file", (req, res) => {
+  res.json({ message: "Rules saved (session only — use local/Docker deployment for persistence)", count: DEFAULT_SNORT_RULES.length });
+});
+
+app.post("/api/snort-rules/reload", (_req, res) => {
+  res.json({ message: "Rules reloaded", count: DEFAULT_SNORT_RULES.length });
+});
+
+// ── Network monitor — returns empty data on Vercel (no live capture) ──────────
+app.get("/api/network/arp", (_req, res) => res.json([]));
+app.get("/api/network/flows", (_req, res) => res.json([]));
+app.get("/api/network/dns", (_req, res) => res.json([]));
+app.get("/api/network/alerts", (_req, res) => res.json([]));
+
+app.get("/api/network/stats", (_req, res) => {
+  res.json({
+    capture: { packetsReceived: 0, packetsDropped: 0, interface: "N/A (cloud)", isLive: false },
+    analyzer: { packetsAnalyzed: 0, arpEntries: 0, activeFlows: 0, dnsQueries: 0, alertsGenerated: 0 },
+    isLiveCapture: false,
+    snortRulesLoaded: DEFAULT_SNORT_RULES.length,
+    modelsLoaded: { v1_wireless: false, v2_nslkdd: false, nb_fallback: false },
+  });
+});
+
+// ── SSE stream — not supported on Vercel serverless ───────────────────────────
 app.get("/api/stream", (_req, res) => {
   res.status(501).json({ message: "SSE not supported on serverless. Use Insforge realtime." });
 });

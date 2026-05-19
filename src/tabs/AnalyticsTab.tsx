@@ -6,6 +6,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Pie,
   PieChart,
@@ -160,9 +161,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
                   fill="#0ea5e9"
                 >
                   {devicePieData.map((entry, i) => (
-                    <g key={entry.name}>
-                      <rect fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                    </g>
+                    <Cell key={entry.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                   ))}
                 </Pie>
                 <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }} />
