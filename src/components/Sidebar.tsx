@@ -1,6 +1,7 @@
 import {
   Activity,
   BarChart2,
+  Brain,
   History,
   Server,
   Settings as SettingsIcon,
@@ -12,7 +13,7 @@ import type { Device, SystemStatus } from "../types";
 import { NavButton } from "./ui/NavButton";
 import { SidebarStat } from "./ui/SidebarStat";
 
-export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "settings";
+export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "ml" | "settings";
 
 interface SidebarProps {
   selectedTab: TabId;
@@ -83,6 +84,12 @@ export const Sidebar = memo(function Sidebar({
           <NavButton active={selectedTab === "analytics"} onClick={() => onTabChange("analytics")}>
             <span className="flex items-center gap-2">
               <BarChart2 className="w-3.5 h-3.5" /> Analytics
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "ml"} onClick={() => onTabChange("ml")}>
+            <span className="flex items-center gap-2">
+              <Brain className="w-3.5 h-3.5" /> ML Engine
             </span>
           </NavButton>
 

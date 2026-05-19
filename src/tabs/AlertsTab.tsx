@@ -50,6 +50,9 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
             <option value="MAC_SPOOFING">MAC Spoofing</option>
             <option value="UNAUTHORIZED_DEVICE">Unauthorized Device</option>
             <option value="CHANNEL_ANOMALY">Channel Anomaly</option>
+            <option value="PORT_SCAN">Port Scan</option>
+            <option value="BRUTE_FORCE">Brute Force</option>
+            <option value="ANOMALY">ML Anomaly</option>
           </select>
           <select
             value={severityFilter}

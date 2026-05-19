@@ -1,4 +1,4 @@
-import { AlertTriangle, Fingerprint, Radio, Wifi, Zap } from "lucide-react";
+import { AlertTriangle, Fingerprint, Radio, ScanLine, ShieldAlert, TrendingUp, Wifi, Zap } from "lucide-react";
 import type { Alert, AlertTypeMeta } from "../types";
 
 export const ALERT_TYPE_META: Record<Alert["type"], AlertTypeMeta> = {
@@ -36,5 +36,26 @@ export const ALERT_TYPE_META: Record<Alert["type"], AlertTypeMeta> = {
     color: "text-sky-400",
     bg: "bg-sky-500/10",
     border: "border-sky-500/30",
+  },
+  PORT_SCAN: {
+    label: "Port Scan",
+    icon: <ScanLine className="w-3.5 h-3.5" />,
+    color: "text-cyan-400",
+    bg: "bg-cyan-500/10",
+    border: "border-cyan-500/30",
+  },
+  BRUTE_FORCE: {
+    label: "Brute Force",
+    icon: <ShieldAlert className="w-3.5 h-3.5" />,
+    color: "text-red-400",
+    bg: "bg-red-500/10",
+    border: "border-red-500/30",
+  },
+  ANOMALY: {
+    label: "ML Anomaly",
+    icon: <TrendingUp className="w-3.5 h-3.5" />,
+    color: "text-violet-400",
+    bg: "bg-violet-500/10",
+    border: "border-violet-500/30",
   },
 };

@@ -3,11 +3,13 @@ import type { ReactNode } from "react";
 export interface Alert {
   id: string;
   timestamp: number;
-  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY";
+  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY";
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
   details: any;
+  mlScore?: number;       // 0–1 confidence from ML module
+  detectionMethod?: "signature" | "anomaly" | "ml";
 }
 
 export interface Device {
@@ -70,6 +72,49 @@ export interface EngineConfig {
   deauthThreshold: number;
   deauthWindowMs: number;
   dedupWindowMs: number;
+  portScanThreshold?: number;
+  portScanWindowMs?: number;
+  bruteForceThreshold?: number;
+  bruteForceWindowMs?: number;
+  snortRules?: SnortRule[];
+  mlEnabled?: boolean;
+  anomalyEnabled?: boolean;
+}
+
+export interface SnortRule {
+  id: string;
+  enabled: boolean;
+  action: "alert" | "log" | "drop";
+  protocol: "tcp" | "udp" | "icmp" | "any";
+  srcIp: string;
+  srcPort: string;
+  dstIp: string;
+  dstPort: string;
+  msg: string;
+  sid: number;
+}
+
+export interface MLResult {
+  mac: string;
+  timestamp: number;
+  score: number;           // 0–1 anomaly score
+  classification: "normal" | "suspicious" | "malicious";
+  features: {
+    packetRate: number;
+    avgSignal: number;
+    uniqueChannels: number;
+    deauthRatio: number;
+    beaconRatio: number;
+  };
+}
+
+export interface AnomalyBaseline {
+  avgPacketRate: number;
+  stdPacketRate: number;
+  avgDeauthRatio: number;
+  avgBeaconRatio: number;
+  sampleCount: number;
+  lastUpdated: number;
 }
 
 export type AlertTypeMeta = {
