@@ -183,7 +183,7 @@ app.get("/api/alerts/export", async (_req, res) => {
   const alerts: Alert[] = data ?? [];
   const header = "ID,Timestamp,Type,Severity,Target MAC,Description\n";
   const rows = alerts.map((a) =>
-    `"${a.id}","${new Date(a.timestamp).toISOString()}","${a.type}","${a.severity}","${a.targetMac ?? a.target_mac}","${String(a.description).replace(/"/g, '""')}"`
+    `"${a.id}","${new Date(a.timestamp).toISOString()}","${a.type}","${a.severity}","${a.targetMac}","${String(a.description).replace(/"/g, '""')}"`
   ).join("\n");
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", `attachment; filename="salamanda-alerts-${Date.now()}.csv"`);

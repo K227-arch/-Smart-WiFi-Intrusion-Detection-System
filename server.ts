@@ -4,18 +4,35 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
 import * as ort from "onnxruntime-node";
+import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
+import { NetworkAnalyzer, type NetworkAlert } from "./src/capture/networkAnalyzer";
+import { loadSnortRules, matchSnortRule, ensureDefaultRulesFile, type SnortRuleParsed } from "./src/capture/snortRules";
 
-// ── ONNX Model ────────────────────────────────────────────────────────────────
-const MODEL_PATH = path.join(process.cwd(), "models", "wids_rf.onnx");
-let ortSession: ort.InferenceSession | null = null;
+// ── ONNX Models ───────────────────────────────────────────────────────────────
+// Model v1: 5-feature wireless scorer (original)
+const MODEL_PATH_V1 = path.join(process.cwd(), "models", "wids_rf.onnx");
+// Model v2: 10-feature NSL-KDD network classifier
+const MODEL_PATH_V2 = path.join(process.cwd(), "models", "wids_rf_v2.onnx");
+// Model v2 NB: lightweight Naive Bayes fallback
+const MODEL_PATH_NB = path.join(process.cwd(), "models", "wids_nb_v2.onnx");
+
+let ortSessionV1: ort.InferenceSession | null = null;
+let ortSessionV2: ort.InferenceSession | null = null;
+let ortSessionNB: ort.InferenceSession | null = null;
 
 async function loadOnnxModel() {
   try {
-    ortSession = await ort.InferenceSession.create(MODEL_PATH);
-    console.log("✓ ONNX ML model loaded:", MODEL_PATH);
-  } catch (e) {
-    console.warn("⚠ ONNX model load failed, falling back to heuristic scorer:", e);
-  }
+    ortSessionV1 = await ort.InferenceSession.create(MODEL_PATH_V1);
+    console.log("✓ ONNX v1 (wireless RF) loaded");
+  } catch (e) { console.warn("⚠ ONNX v1 load failed:", (e as Error).message); }
+  try {
+    ortSessionV2 = await ort.InferenceSession.create(MODEL_PATH_V2);
+    console.log("✓ ONNX v2 (NSL-KDD RF) loaded");
+  } catch (e) { console.warn("⚠ ONNX v2 load failed:", (e as Error).message); }
+  try {
+    ortSessionNB = await ort.InferenceSession.create(MODEL_PATH_NB);
+    console.log("✓ ONNX NB (Naive Bayes) loaded");
+  } catch (e) { console.warn("⚠ ONNX NB load failed:", (e as Error).message); }
 }
 
 /**
@@ -24,39 +41,52 @@ async function loadOnnxModel() {
  * Features: [packet_rate, deauth_ratio, beacon_ratio, unique_channels, avg_signal_norm]
  */
 async function onnxInfer(features: number[]): Promise<{ score: number; classIndex: number }> {
-  if (!ortSession) return heuristicScore(features);
+  const session = ortSessionV1;
+  if (!session) return heuristicScore(features);
 
   try {
     const input = new Float32Array(features);
     const tensor = new ort.Tensor("float32", input, [1, 5]);
     const feeds: Record<string, ort.Tensor> = {};
-    // Use the first input name from the model
-    feeds[ortSession.inputNames[0]] = tensor;
-
-    const results = await ortSession.run(feeds);
-
-    // Get predicted class from output_label
-    const labelOutput = results[ortSession.outputNames[0]];
+    feeds[session.inputNames[0]] = tensor;
+    const results = await session.run(feeds);
+    const labelOutput = results[session.outputNames[0]];
     const classIndex = Number(labelOutput.data[0]) as 0 | 1 | 2;
-
-    // Get probabilities from output_probability (map output)
-    // skl2onnx outputs probabilities as a sequence of maps
-    const probOutput = results[ortSession.outputNames[1]];
+    const probOutput = results[session.outputNames[1]];
     let score = 0;
-    if (probOutput && probOutput.data) {
-      // probOutput.data is flat: [p0, p1, p2] for the single sample
+    if (probOutput?.data) {
       const probs = probOutput.data as Float32Array;
-      // Score = P(suspicious) * 0.5 + P(malicious) * 1.0
       score = (probs[1] ?? 0) * 0.5 + (probs[2] ?? 0) * 1.0;
     } else {
-      // Fallback: map class to score
       score = classIndex === 2 ? 0.9 : classIndex === 1 ? 0.55 : 0.1;
     }
-
     return { score: Math.min(score, 1), classIndex };
-  } catch (e) {
-    return heuristicScore(features);
-  }
+  } catch (e) { return heuristicScore(features); }
+}
+
+/**
+ * NSL-KDD v2 inference — 10 features, 5 classes
+ * Classes: 0=Normal 1=DoS 2=Probe 3=R2L 4=U2R
+ */
+async function onnxInferV2(features: number[]): Promise<{ classIndex: number; className: string; confidence: number }> {
+  const session = ortSessionV2 ?? ortSessionNB;
+  if (!session) return { classIndex: 0, className: "Normal", confidence: 1 };
+  try {
+    const input = new Float32Array(features);
+    const tensor = new ort.Tensor("float32", input, [1, 10]);
+    const feeds: Record<string, ort.Tensor> = {};
+    feeds[session.inputNames[0]] = tensor;
+    const results = await session.run(feeds);
+    const classIndex = Number(results[session.outputNames[0]].data[0]);
+    const classNames = ["Normal", "DoS", "Probe", "R2L", "U2R"];
+    const probOutput = results[session.outputNames[1]];
+    let confidence = 1;
+    if (probOutput?.data) {
+      const probs = probOutput.data as Float32Array;
+      confidence = probs[classIndex] ?? 1;
+    }
+    return { classIndex, className: classNames[classIndex] ?? "Unknown", confidence };
+  } catch { return { classIndex: 0, className: "Normal", confidence: 1 }; }
 }
 
 /** Fallback heuristic scorer (used if ONNX fails) */
@@ -93,7 +123,7 @@ interface WiFiPacket {
 interface Alert {
   id: string;
   timestamp: number;
-  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY";
+  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY";
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
@@ -350,6 +380,94 @@ interface MLResultEntry {
   };
 }
 let mlResults: MLResultEntry[] = [];
+
+// ── Live Packet Capture + Network Analyzer ────────────────────────────────────
+const captureEngine = new PacketCaptureEngine(
+  process.env.CAPTURE_IFACE ?? "en0",
+  process.env.CAPTURE_FILTER ?? ""
+);
+const networkAnalyzer = new NetworkAnalyzer();
+
+// Network alerts from layer 3/4 analysis
+let networkAlerts: (NetworkAlert & { id: string })[] = [];
+
+// Forward network analyzer alerts into the main alert system
+networkAnalyzer.on("alert", (na: NetworkAlert) => {
+  const typeMap: Record<string, Alert["type"]> = {
+    ARP_SPOOFING: "MAC_SPOOFING",
+    SYN_FLOOD: "DEAUTH_ATTACK",
+    PORT_SCAN_TCP: "PORT_SCAN",
+    DNS_TUNNELING: "ANOMALY",
+    DNS_EXFILTRATION: "ANOMALY",
+    ICMP_FLOOD: "DEAUTH_ATTACK",
+    TCP_ANOMALY: "CHANNEL_ANOMALY",
+    ARP_SCAN: "PORT_SCAN",
+    PROTOCOL_ANOMALY: "ANOMALY",
+  };
+  const alertType = typeMap[na.type] ?? "ANOMALY";
+  addAlert({
+    type: alertType as Alert["type"],
+    severity: na.severity,
+    targetMac: na.srcMac ?? na.srcIp ?? "unknown",
+    description: na.description,
+    details: { ...na.details, networkAlertType: na.type, detectionMethod: na.detectionMethod, srcIp: na.srcIp, dstIp: na.dstIp },
+  }, config.dedupWindowMs);
+
+  // Also store in networkAlerts for the dedicated endpoint
+  const entry = { ...na, id: Math.random().toString(36).substr(2, 9) };
+  networkAlerts.unshift(entry);
+  if (networkAlerts.length > 200) networkAlerts.pop();
+});
+
+// Forward captured packets to network analyzer + NSL-KDD ML
+captureEngine.on("packet", (pkt: CapturedPacket) => {
+  networkAnalyzer.processPacket(pkt);
+
+  // Run Snort rules against captured packet
+  for (const rule of snortRules) {
+    if (matchSnortRule(rule, pkt)) {
+      addAlert({
+        type: "ANOMALY",
+        severity: rule.priority === 1 ? "high" : rule.priority === 2 ? "medium" : "low",
+        targetMac: pkt.srcMac,
+        description: `[SID:${rule.sid}] ${rule.msg} — src: ${pkt.srcIp ?? pkt.srcMac} → dst: ${pkt.dstIp ?? pkt.dstMac}`,
+        details: { sid: rule.sid, rule: rule.msg, srcIp: pkt.srcIp, dstIp: pkt.dstIp, srcPort: pkt.srcPort, dstPort: pkt.dstPort, method: "snort" },
+      }, config.dedupWindowMs);
+    }
+  }
+
+  // NSL-KDD v2 ML inference on network packets
+  if (pkt.srcIp && pkt.protocol) {
+    const features = [
+      0,                                          // duration (unknown for single pkt)
+      pkt.protocol === 6 ? 0 : pkt.protocol === 17 ? 1 : 2, // protocol_type
+      pkt.length,                                 // src_bytes
+      0,                                          // dst_bytes
+      pkt.srcIp === pkt.dstIp ? 1 : 0,           // land
+      0,                                          // wrong_fragment
+      0,                                          // urgent
+      1,                                          // count
+      1,                                          // srv_count
+      (pkt.tcpFlags !== undefined && (pkt.tcpFlags & 0x02) && !(pkt.tcpFlags & 0x10)) ? 1 : 0, // serror_rate
+    ];
+    onnxInferV2(features).then(({ classIndex, className, confidence }) => {
+      if (classIndex > 0 && confidence > 0.7) {
+        addAlert({
+          type: classIndex === 1 ? "DEAUTH_ATTACK" : classIndex === 2 ? "PORT_SCAN" : "ANOMALY",
+          severity: classIndex === 1 ? "high" : classIndex === 2 ? "medium" : "high",
+          targetMac: pkt.srcMac,
+          description: `NSL-KDD ML (v2): ${pkt.srcIp} classified as ${className} (confidence: ${(confidence * 100).toFixed(0)}%).`,
+          details: { srcIp: pkt.srcIp, dstIp: pkt.dstIp, className, confidence, classIndex, model: "wids_rf_v2", method: "ml-nslkdd" },
+        }, config.dedupWindowMs * 3);
+      }
+    });
+  }
+});
+
+// ── Snort Rules ───────────────────────────────────────────────────────────────
+const SNORT_RULES_FILE = path.join(process.cwd(), "data", "wids.rules");
+ensureDefaultRulesFile(SNORT_RULES_FILE);
+let snortRules: SnortRuleParsed[] = loadSnortRules(SNORT_RULES_FILE);
 
 // --- Detection Engine ---
 const detectionEngine = {
@@ -850,9 +968,31 @@ async function startServer() {
     res.json(mlResults);
   });
 
-  // GET /api/snort-rules
+  // GET /api/snort-rules — live Snort rules (file-based)
   app.get("/api/snort-rules", (_req, res) => {
-    res.json(SNORT_RULES.map(({ id, enabled, msg, severity, type }) => ({ id, enabled, msg, severity, type })));
+    res.json(snortRules.map(({ raw, sid, msg, action, protocol, srcIp, srcPort, dstIp, dstPort, enabled, classtype, priority }) =>
+      ({ raw, sid, msg, action, protocol, srcIp, srcPort, dstIp, dstPort, enabled, classtype, priority })));
+  });
+
+  // POST /api/snort-rules/reload
+  app.post("/api/snort-rules/reload", (_req, res) => {
+    snortRules = loadSnortRules(SNORT_RULES_FILE);
+    res.json({ message: `Reloaded ${snortRules.length} rules`, count: snortRules.length });
+  });
+
+  // GET /api/snort-rules/file
+  app.get("/api/snort-rules/file", (_req, res) => {
+    const content = fs.existsSync(SNORT_RULES_FILE) ? fs.readFileSync(SNORT_RULES_FILE, "utf-8") : "";
+    res.json({ content, path: SNORT_RULES_FILE });
+  });
+
+  // PUT /api/snort-rules/file
+  app.put("/api/snort-rules/file", (req, res) => {
+    const { content } = req.body;
+    if (typeof content !== "string") return res.status(400).json({ error: "content required" });
+    fs.writeFileSync(SNORT_RULES_FILE, content);
+    snortRules = loadSnortRules(SNORT_RULES_FILE);
+    res.json({ message: `Saved and reloaded ${snortRules.length} rules` });
   });
 
   // GET /api/anomaly-baseline
@@ -865,7 +1005,43 @@ async function startServer() {
     });
   });
 
-  // GET /api/status
+  // GET /api/network/arp
+  app.get("/api/network/arp", (_req, res) => res.json(networkAnalyzer.getArpTable()));
+
+  // GET /api/network/flows
+  app.get("/api/network/flows", (_req, res) => res.json(networkAnalyzer.getFlows()));
+
+  // GET /api/network/dns
+  app.get("/api/network/dns", (_req, res) => res.json(networkAnalyzer.getDnsRecords()));
+
+  // GET /api/network/alerts
+  app.get("/api/network/alerts", (_req, res) => res.json(networkAlerts.slice(0, 100)));
+
+  // GET /api/network/stats
+  app.get("/api/network/stats", (_req, res) => {
+    res.json({
+      capture: captureEngine.getStats(),
+      analyzer: networkAnalyzer.getStats(),
+      isLiveCapture: captureEngine.isLive(),
+      snortRulesLoaded: snortRules.length,
+      modelsLoaded: {
+        v1_wireless: ortSessionV1 !== null,
+        v2_nslkdd: ortSessionV2 !== null,
+        nb_fallback: ortSessionNB !== null,
+      },
+    });
+  });
+
+  // POST /api/pcap/replay
+  app.post("/api/pcap/replay", async (req, res) => {
+    const { filePath, speed = 10 } = req.body;
+    if (!filePath) return res.status(400).json({ error: "filePath required" });
+    const safePath = path.resolve(process.cwd(), "data", path.basename(filePath));
+    if (!fs.existsSync(safePath)) return res.status(404).json({ error: "File not found in data/" });
+    res.json({ message: `Replaying ${path.basename(safePath)} at ${speed}x speed` });
+    captureEngine.replayPcap(safePath, speed).catch(console.error);
+  });
+
   app.get("/api/status", (_req, res) => {
     res.json({
       activeAlerts: alerts.length,
@@ -1023,6 +1199,15 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`SALAMANDA WIDS running on http://localhost:${PORT}`);
     startSimulator();
+
+    // ── Start live packet capture (falls back to simulator if no privileges) ──
+    captureEngine.start().then((live) => {
+      if (live) {
+        console.log(`✓ Live capture active on ${process.env.CAPTURE_IFACE ?? "en0"}`);
+      } else {
+        console.log("ℹ Simulator mode active (run with sudo for live capture)");
+      }
+    });
 
     // ── Sync packet count to Insforge every 30s ──
     setInterval(() => {

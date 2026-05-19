@@ -24,6 +24,8 @@ import { AlertsTab } from "./tabs/AlertsTab";
 import { LiveTrafficTab } from "./tabs/LiveTrafficTab";
 import { AnalyticsTab } from "./tabs/AnalyticsTab";
 import { MLTab } from "./tabs/MLTab";
+import { NetworkTab } from "./tabs/NetworkTab";
+import { SnortTab } from "./tabs/SnortTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 
 import type { Device } from "./types";
@@ -236,6 +238,20 @@ Keep it professional and technical but accessible. Format in Markdown.`.trim()
               <Fragment key="ml">
                 <ErrorBoundary fallbackLabel="ML Engine Error">
                   <MLTab analytics={analytics} mlResults={mlResults} />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "network" && (
+              <Fragment key="network">
+                <ErrorBoundary fallbackLabel="Network Monitor Error">
+                  <NetworkTab />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "snort" && (
+              <Fragment key="snort">
+                <ErrorBoundary fallbackLabel="Snort Rules Error">
+                  <SnortTab />
                 </ErrorBoundary>
               </Fragment>
             )}
