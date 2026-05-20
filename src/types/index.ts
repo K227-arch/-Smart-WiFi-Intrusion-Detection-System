@@ -19,6 +19,8 @@ export interface Device {
   firstSeen: number;
   ssid?: string;
   avgSignal: number;
+  ipAddress?: string;
+  hostname?: string;
 }
 
 export interface WiFiPacket {
@@ -40,6 +42,7 @@ export interface SystemStatus {
   totalPacketsProcessed: number;
   detectionCounts: Record<string, number>;
   trustedDevices: number;
+  activeInterface?: string;
 }
 
 export interface Analytics {

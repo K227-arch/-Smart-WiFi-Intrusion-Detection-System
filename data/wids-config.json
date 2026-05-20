@@ -1,13 +1,13 @@
 {
   "knownNetworks": [
     {
-      "ssid": "Enterprise_Secure_WiFi",
-      "bssid": "DE:AD:BE:EF:00:01",
-      "channel": 6
+      "ssid": "UCC-TESTBED",
+      "bssid": "48:3A:02:61:90:45",
+      "channel": 161
     }
   ],
   "trustedMacs": [
-    "AA:BB:CC:DD:EE:FF"
+    "68:FE:F7:15:BC:A7"
   ],
   "deauthThreshold": 5,
   "deauthWindowMs": 3000,

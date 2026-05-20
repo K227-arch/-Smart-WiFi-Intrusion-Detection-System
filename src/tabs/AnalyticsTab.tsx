@@ -15,7 +15,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatNumber, mockChartData } from "../lib/utils";
+import { formatNumber } from "../lib/utils";
 import type { Analytics, TrafficBucket } from "../types";
 import { KpiCard } from "../components/ui/KpiCard";
 
@@ -31,7 +31,7 @@ const DETECTION_COLORS: Record<string, string> = {
   DEAUTH_ATTACK: "#f97316",
   MAC_SPOOFING: "#a855f7",
   UNAUTHORIZED_DEVICE: "#f59e0b",
-  CHANNEL_ANOMALY: "#0ea5e9",
+  CHANNEL_ANOMALY: "#F59E0B",
 };
 
 // Target accuracy benchmarks from spec Chapter 6
@@ -52,7 +52,7 @@ const ATTACK_LABELS: Record<string, string> = {
 };
 
 export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
-  const liveChart = chartData.length > 0 ? chartData : mockChartData;
+  const liveChart = chartData;
 
   const detectionBarData = analytics
     ? Object.entries(analytics.detectionCounts).map(([type, count]) => ({
@@ -101,7 +101,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
         <KpiCard
           label="Packets Analyzed"
           value={analytics ? formatNumber(analytics.totalPacketsProcessed) : "—"}
-          color="text-sky-400"
+          color="text-amber-400"
           trend="Since engine start"
           trendColor="text-slate-500"
         />
@@ -126,7 +126,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
         {/* Detection bar chart */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 h-56">
           <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-            <BarChart2 className="w-3 h-3 text-sky-500" /> Detections by Attack Type
+            <BarChart2 className="w-3 h-3 text-amber-500" /> Detections by Attack Type
           </h4>
           <ResponsiveContainer width="100%" height="85%">
             <BarChart data={detectionBarData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
@@ -135,7 +135,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
               <YAxis tick={{ fontSize: 9, fill: "#64748b" }} />
               <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }} />
               <Bar dataKey="count" radius={[3, 3, 0, 0]}
-                fill="#0ea5e9"
+                fill="#F59E0B"
                 label={false}
               />
             </BarChart>
@@ -145,7 +145,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
         {/* Device pie chart */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 h-56">
           <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-            <Server className="w-3 h-3 text-sky-500" /> Device Status Distribution
+            <Server className="w-3 h-3 text-amber-500" /> Device Status Distribution
           </h4>
           {devicePieData.length > 0 ? (
             <ResponsiveContainer width="100%" height="85%">
@@ -158,7 +158,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
                   outerRadius={70}
                   paddingAngle={3}
                   dataKey="value"
-                  fill="#0ea5e9"
+                  fill="#F59E0B"
                 >
                   {devicePieData.map((entry, i) => (
                     <Cell key={entry.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />
@@ -204,7 +204,7 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
               {accuracyRows.map((row) => (
                 <tr key={row.key} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
                   <td className="px-6 py-4 font-semibold text-slate-200">{row.label}</td>
-                  <td className="px-6 py-4 text-center font-mono text-sky-400 font-bold">{row.detected}</td>
+                  <td className="px-6 py-4 text-center font-mono text-amber-400 font-bold">{row.detected}</td>
                   <td className="px-6 py-4 text-center font-mono text-rose-400 font-bold">{row.fp}</td>
                   <td className="px-6 py-4 text-center font-mono font-bold"
                     style={{ color: row.displayAccuracy >= 90 ? "#10b981" : row.displayAccuracy >= 75 ? "#f59e0b" : "#f43f5e" }}>
@@ -242,8 +242,14 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
       {/* Traffic trend chart */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 h-52 shrink-0">
         <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-          <Activity className="w-3 h-3 text-sky-500" /> Traffic Trend (30s Buckets)
+          <Activity className="w-3 h-3 text-amber-500" /> Traffic Trend (30s Buckets)
         </h4>
+        {liveChart.length === 0 ? (
+          <div className="flex items-center justify-center h-[85%] text-slate-600 text-xs italic gap-2">
+            <Activity className="w-4 h-4 animate-pulse" />
+            Waiting for live traffic data…
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height="85%">
           <AreaChart data={liveChart}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
@@ -251,12 +257,13 @@ export function AnalyticsTab({ analytics, chartData }: AnalyticsTabProps) {
             <YAxis tick={{ fontSize: 9, fill: "#64748b" }} />
             <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }} />
             <Legend iconSize={8} wrapperStyle={{ fontSize: "10px", color: "#94a3b8" }} />
-            <Area type="monotone" dataKey="data" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.1} name="Data" />
+            <Area type="monotone" dataKey="data" stroke="#F59E0B" fill="#F59E0B" fillOpacity={0.1} name="Data" />
             <Area type="monotone" dataKey="beacons" stroke="#10b981" fill="#10b981" fillOpacity={0.05} name="Beacons" />
             <Area type="monotone" dataKey="mgmt" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.05} name="MGMT" />
             <Area type="monotone" dataKey="deauth" stroke="#f43f5e" fill="#f43f5e" fillOpacity={0.15} name="Deauth" />
           </AreaChart>
         </ResponsiveContainer>
+        )}
       </div>
     </motion.div>
   );

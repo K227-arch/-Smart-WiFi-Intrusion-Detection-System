@@ -8,7 +8,7 @@ interface SidebarStatProps {
   color?: string;
 }
 
-export function SidebarStat({ label, value, progress, color = "bg-sky-500" }: SidebarStatProps) {
+export function SidebarStat({ label, value, progress, color = "bg-amber-500" }: SidebarStatProps) {
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-end">

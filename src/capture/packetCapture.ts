@@ -167,8 +167,12 @@ export class PacketCaptureEngine extends EventEmitter {
 
   async start(): Promise<boolean> {
     try {
-      // Dynamic import — cap is optional
-      const { Cap, decoders } = await import("cap");
+      // Use createRequire to load the native CJS addon reliably under tsx/ESM
+      const { createRequire } = await import("module");
+      const require = createRequire(import.meta.url);
+      const capModule = require("cap");
+      // Handle both direct export and default-wrapped export
+      const Cap = capModule.Cap ?? capModule.default?.Cap ?? capModule;
       const c = new Cap();
       const device = Cap.findDevice(this.iface) ?? this.iface;
       const linkType = c.open(device, this.filter || "ip or arp", 65535, this.buffer);
@@ -194,7 +198,7 @@ export class PacketCaptureEngine extends EventEmitter {
       console.log(`✓ Live capture started on ${this.iface} (${linkType}) filter="${this.filter}"`);
       return true;
     } catch (e: any) {
-      console.warn(`⚠ Live capture unavailable (${e.message}). Using simulator.`);
+      console.warn(`⚠ Live capture unavailable (${e.message}).`);
       this.pcapAvailable = false;
       return false;
     }

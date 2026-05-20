@@ -124,7 +124,7 @@ export const Sidebar = memo(function Sidebar({
             label="Packets Processed"
             value={status ? formatNumber(status.totalPacketsProcessed) : "—"}
             progress={Math.min(100, (status?.totalPacketsProcessed ?? 0) / 100)}
-            color="bg-sky-500"
+            color="bg-amber-500"
           />
           <SidebarStat
             label="Trusted Devices"
@@ -137,8 +137,7 @@ export const Sidebar = memo(function Sidebar({
             value={status ? formatUptime(status.uptime) : "—"}
             progress={100}
             color="bg-purple-500"
-          />
-        </div>
+          />        </div>
       </div>
 
       <div className="flex-1" />

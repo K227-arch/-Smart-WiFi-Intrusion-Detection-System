@@ -71,6 +71,45 @@ const ARP_SCAN_THRESHOLD = 20;        // ARP requests per window
 const ARP_SCAN_WINDOW_MS = 5000;
 const FLOW_TIMEOUT_MS = 120_000;      // 2 min idle flow cleanup
 
+// ── Trusted IP prefixes — never generate alerts for these ─────────────────────
+// Includes the InsForge/AWS backend, CDNs, and local loopback.
+// Add your own trusted server IPs here if needed.
+const TRUSTED_IP_PREFIXES = [
+  "127.",           // loopback
+  "169.254.",       // link-local
+  "::1",            // IPv6 loopback
+  // InsForge backend (AWS us-east-2) — these are the app's own API calls
+  "3.132.",
+  "3.151.",
+  "18.219.",
+  "52.54.",
+  "98.84.",
+  "32.195.",
+  "32.192.",
+  "54.80.",
+  "96.45.",
+];
+
+// Own machine IPs — populated at runtime by the server
+const ownIps = new Set<string>();
+
+export function addOwnIp(ip: string) { ownIps.add(ip); }
+
+// Returns true if this IP should be excluded from alert generation.
+// Own machine IPs and known backend/CDN prefixes are both filtered.
+function isFilteredIp(ip?: string): boolean {
+  if (!ip) return false;
+  if (ownIps.has(ip)) return true;          // own machine — never alert on self
+  return TRUSTED_IP_PREFIXES.some((prefix) => ip.startsWith(prefix));
+}
+
+// Port scan: skip if the scanner is a trusted backend IP or own machine
+function isTrustedScanner(ip?: string): boolean {
+  if (!ip) return false;
+  if (ownIps.has(ip)) return true;
+  return TRUSTED_IP_PREFIXES.some((prefix) => ip.startsWith(prefix));
+}
+
 // ── Entropy calculator ────────────────────────────────────────────────────────
 function shannonEntropy(s: string): number {
   const freq: Record<string, number> = {};
@@ -116,6 +155,13 @@ export class NetworkAnalyzer extends EventEmitter {
 
   processPacket(pkt: CapturedPacket) {
     this.stats.packetsAnalyzed++;
+
+    // Skip analysis for filtered IPs (own machine, backend servers, CDNs)
+    if (isFilteredIp(pkt.srcIp) || isFilteredIp(pkt.dstIp)) {
+      // Still track flows for visibility but don't alert
+      if (pkt.etherType === 0x0800 && pkt.protocol === 6) this.trackFlowOnly(pkt);
+      return;
+    }
 
     // Periodic flow cleanup
     if (this.stats.packetsAnalyzed % 1000 === 0) this.cleanupFlows();
@@ -246,20 +292,22 @@ export class NetworkAnalyzer extends EventEmitter {
     // TCP port scan: many unique dst ports from same src
     const now = Date.now();
     const psTracker = this.portScanTracker.get(pkt.srcIp);
-    if (!psTracker || now - psTracker.windowStart > PORT_SCAN_WINDOW_MS) {
-      this.portScanTracker.set(pkt.srcIp, { ports: new Set([pkt.dstPort]), windowStart: now });
-    } else {
-      psTracker.ports.add(pkt.dstPort);
-      if (psTracker.ports.size === PORT_SCAN_THRESHOLD) {
-        this.fireAlert({
-          type: "PORT_SCAN_TCP",
-          severity: "medium",
-          srcIp: pkt.srcIp,
-          dstIp: pkt.dstIp,
-          description: `TCP Port Scan: ${pkt.srcIp} probed ${psTracker.ports.size} unique ports on ${pkt.dstIp} in ${PORT_SCAN_WINDOW_MS / 1000}s.`,
-          details: { srcIp: pkt.srcIp, dstIp: pkt.dstIp, portCount: psTracker.ports.size, samplePorts: [...psTracker.ports].slice(0, 10) },
-          detectionMethod: "signature",
-        });
+    if (!isTrustedScanner(pkt.srcIp)) {
+      if (!psTracker || now - psTracker.windowStart > PORT_SCAN_WINDOW_MS) {
+        this.portScanTracker.set(pkt.srcIp, { ports: new Set([pkt.dstPort]), windowStart: now });
+      } else {
+        psTracker.ports.add(pkt.dstPort);
+        if (psTracker.ports.size === PORT_SCAN_THRESHOLD) {
+          this.fireAlert({
+            type: "PORT_SCAN_TCP",
+            severity: "medium",
+            srcIp: pkt.srcIp,
+            dstIp: pkt.dstIp,
+            description: `TCP Port Scan: ${pkt.srcIp} probed ${psTracker.ports.size} unique ports on ${pkt.dstIp} in ${PORT_SCAN_WINDOW_MS / 1000}s.`,
+            details: { srcIp: pkt.srcIp, dstIp: pkt.dstIp, portCount: psTracker.ports.size, samplePorts: [...psTracker.ports].slice(0, 10) },
+            detectionMethod: "signature",
+          });
+        }
       }
     }
 
@@ -321,6 +369,8 @@ export class NetworkAnalyzer extends EventEmitter {
   // ── DNS Analysis ──────────────────────────────────────────────────────────
   private analyzeDns(pkt: CapturedPacket) {
     if (!pkt.dnsQuery || pkt.dnsQuery.length < 3) return;
+    // Skip DNS queries from own machine or to trusted resolvers
+    if (isFilteredIp(pkt.srcIp)) return;
     this.stats.dnsQueries++;
 
     const query = pkt.dnsQuery.toLowerCase();
@@ -384,6 +434,26 @@ export class NetworkAnalyzer extends EventEmitter {
     this.stats.alertsGenerated++;
     const alert: NetworkAlert = { ...data, timestamp: Date.now() };
     this.emit("alert", alert);
+  }
+
+  // Track flow without alerting — used for trusted IPs
+  private trackFlowOnly(pkt: CapturedPacket) {
+    if (!pkt.srcIp || !pkt.dstIp || !pkt.srcPort || !pkt.dstPort) return;
+    const key = `${pkt.srcIp}:${pkt.srcPort}->${pkt.dstIp}:${pkt.dstPort}`;
+    let flow = this.flowTable.get(key);
+    if (!flow) {
+      flow = {
+        key, srcIp: pkt.srcIp, dstIp: pkt.dstIp,
+        srcPort: pkt.srcPort, dstPort: pkt.dstPort,
+        protocol: "tcp", startTime: Date.now(), lastSeen: Date.now(),
+        packetCount: 0, byteCount: 0, synCount: 0, rstCount: 0, finCount: 0,
+        state: "established",
+      };
+      this.flowTable.set(key, flow);
+    }
+    flow.packetCount++;
+    flow.byteCount += pkt.length;
+    flow.lastSeen = Date.now();
   }
 
   private cleanupFlows() {

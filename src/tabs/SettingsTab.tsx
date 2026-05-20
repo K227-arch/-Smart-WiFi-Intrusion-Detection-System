@@ -20,7 +20,7 @@ const DETECTION_RULES = [
   { title: "Rogue AP (Evil Twin)", rule: "IF SSID matches known network AND BSSID is different → FLAG as Rogue AP", color: "border-rose-500/30 bg-rose-500/5" },
   { title: "Deauth Flood Attack", rule: "IF Deauth packets ≥ threshold within window from same source → FLAG as DoS", color: "border-orange-500/30 bg-orange-500/5" },
   { title: "MAC Spoofing", rule: "IF known SSID is broadcast from a new/unknown BSSID → FLAG as MAC Spoofing", color: "border-purple-500/30 bg-purple-500/5" },
-  { title: "Channel Anomaly", rule: "IF known BSSID suddenly broadcasts on a different channel → FLAG as anomaly", color: "border-sky-500/30 bg-sky-500/5" },
+  { title: "Channel Anomaly", rule: "IF known BSSID suddenly broadcasts on a different channel → FLAG as anomaly", color: "border-amber-500/30 bg-amber-500/5" },
   { title: "Unauthorized Device", rule: "IF MAC address not in trusted whitelist AND first time seen → FLAG device", color: "border-amber-500/30 bg-amber-500/5" },
 ];
 
@@ -51,6 +51,9 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
 
   const addNetwork = () => {
     if (!newNetwork.ssid || !newNetwork.bssid) return;
+    // Validate BSSID format: XX:XX:XX:XX:XX:XX
+    const bssidRegex = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
+    if (!bssidRegex.test(newNetwork.bssid)) return;
     setNetworks((prev) => [...prev, { ...newNetwork }]);
     setNewNetwork({ ssid: "", bssid: "", channel: 6 });
   };
@@ -85,7 +88,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
             "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
             saved
               ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-              : "bg-sky-500 text-white hover:bg-sky-400 shadow-lg shadow-sky-500/20"
+              : "bg-amber-500 text-white hover:bg-amber-400 shadow-lg shadow-amber-500/20"
           )}
         >
           <Save className="w-3.5 h-3.5" />
@@ -98,7 +101,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
         {/* ── Known Networks ── */}
         <section className="space-y-4">
           <div className="flex items-center gap-2">
-            <Wifi className="w-4 h-4 text-sky-500" />
+            <Wifi className="w-4 h-4 text-amber-500" />
             <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Known Networks</h3>
           </div>
           <p className="text-[10px] text-slate-500">
@@ -109,7 +112,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
               <div key={i} className="flex items-center gap-3 p-3 bg-slate-950 border border-slate-800 rounded-lg">
                 <div className="flex-1 grid grid-cols-3 gap-3 text-[11px] font-mono">
                   <span className="text-emerald-400">{n.ssid}</span>
-                  <span className="text-sky-400">{n.bssid}</span>
+                  <span className="text-amber-400">{n.bssid}</span>
                   <span className="text-slate-400">Ch {n.channel}</span>
                 </div>
                 <button onClick={() => removeNetwork(i)} className="p-1 text-slate-600 hover:text-rose-400 transition-colors">
@@ -123,13 +126,18 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
               value={newNetwork.ssid}
               onChange={(e) => setNewNetwork((p) => ({ ...p, ssid: e.target.value }))}
               placeholder="SSID"
-              className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500 placeholder:text-slate-600"
+              className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500 placeholder:text-slate-600"
             />
             <input
               value={newNetwork.bssid}
               onChange={(e) => setNewNetwork((p) => ({ ...p, bssid: e.target.value.toUpperCase() }))}
               placeholder="BSSID (AA:BB:CC:DD:EE:FF)"
-              className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500 placeholder:text-slate-600"
+              className={cn(
+                "bg-slate-950 border rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none placeholder:text-slate-600",
+                newNetwork.bssid && !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(newNetwork.bssid)
+                  ? "border-rose-500/60 focus:border-rose-500"
+                  : "border-slate-700 focus:border-amber-500"
+              )}
             />
             <div className="flex gap-2">
               <input
@@ -138,11 +146,11 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
                 onChange={(e) => setNewNetwork((p) => ({ ...p, channel: Number(e.target.value) }))}
                 min={1} max={14}
                 placeholder="Ch"
-                className="w-20 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500"
+                className="w-20 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500"
               />
               <button
                 onClick={addNetwork}
-                className="flex-1 flex items-center justify-center gap-1 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 rounded text-[10px] font-bold text-sky-400 transition-colors"
+                className="flex-1 flex items-center justify-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded text-[10px] font-bold text-amber-400 transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" /> Add
               </button>

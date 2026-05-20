@@ -5,8 +5,63 @@ import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
 import * as ort from "onnxruntime-node";
 import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
-import { NetworkAnalyzer, type NetworkAlert } from "./src/capture/networkAnalyzer";
+import { NetworkAnalyzer, type NetworkAlert, addOwnIp } from "./src/capture/networkAnalyzer";
 import { loadSnortRules, matchSnortRule, ensureDefaultRulesFile, type SnortRuleParsed } from "./src/capture/snortRules";
+
+// ── Auto-detect the active WiFi interface ────────────────────────────────────
+// Walks all network interfaces and returns the first one that is up, not
+// loopback, and has a real IPv4 address.  Prefers en1 (macOS WiFi) then en0.
+import os from "os";
+
+function detectActiveInterface(): string {
+  const preferred = ["en1", "en0", "wlan0", "wlan1", "wlp2s0"];
+  const ifaces = os.networkInterfaces();
+
+  // Try preferred order first
+  for (const name of preferred) {
+    const addrs = ifaces[name];
+    if (addrs?.some((a) => a.family === "IPv4" && !a.internal)) return name;
+  }
+  // Fall back to any active non-loopback IPv4 interface
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (addrs?.some((a) => a.family === "IPv4" && !a.internal)) return name;
+  }
+  return "en1"; // last resort
+}
+
+const ACTIVE_IFACE = process.env.CAPTURE_IFACE ?? detectActiveInterface();
+console.log(`✓ Capture interface: ${ACTIVE_IFACE}`);
+import dns from "dns/promises";
+async function resolveHostname(ip: string): Promise<string | null> {
+  try {
+    const hostnames = await dns.reverse(ip);
+    return hostnames[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Safe fire-and-forget DB write — silently drops on network error ───────────
+// The InsForge SDK returns a thenable query builder, not a raw Promise.
+// We call .then() on it to execute and swallow network-level errors.
+function dbWrite(query: { then: Function } | Promise<any>, label?: string) {
+  Promise.resolve().then(() => (query as any).then
+    ? (query as any).then((res: any) => {
+        if (res?.error) {
+          const msg: string = res.error?.message ?? String(res.error);
+          if (!msg.includes("fetch failed") && !msg.includes("Network request failed")) {
+            console.error(`DB write error${label ? ` (${label})` : ""}:`, msg);
+          }
+        }
+      })
+    : query
+  ).catch((e: any) => {
+    const msg: string = e?.message ?? String(e);
+    if (!msg.includes("fetch failed") && !msg.includes("Network request failed")) {
+      console.error(`DB write error${label ? ` (${label})` : ""}:`, msg);
+    }
+  });
+}
 
 // ── ONNX Models ───────────────────────────────────────────────────────────────
 // Model v1: 5-feature wireless scorer (original)
@@ -137,6 +192,8 @@ interface Device {
   firstSeen: number;
   ssid?: string;
   avgSignal: number;
+  ipAddress?: string;
+  hostname?: string;
 }
 
 // Engine configuration — editable at runtime via API
@@ -163,8 +220,8 @@ function loadConfig(): EngineConfig {
     console.warn("Could not load config, using defaults:", e);
   }
   return {
-    knownNetworks: [{ ssid: "Enterprise_Secure_WiFi", bssid: "DE:AD:BE:EF:00:01", channel: 6 }],
-    trustedMacs: ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"],
+    knownNetworks: [],
+    trustedMacs: [],
     deauthThreshold: 5,
     deauthWindowMs: 3000,
     dedupWindowMs: 10000,
@@ -205,14 +262,55 @@ function saveAlerts(alerts: Alert[]) {
 let config: EngineConfig = loadConfig();
 let alerts: Alert[] = loadAlerts();
 let devices: Map<string, Device> = new Map();
-let trustedMacs: Set<string> = new Set(config.trustedMacs);
+let trustedMacs: Set<string> = new Set(config.trustedMacs.map((m) => m.toUpperCase()));
 let sseClients: express.Response[] = [];
+
+// ── Auto-trust own machine MACs + gateway so they never flood UNAUTHORIZED alerts
+{
+  const ifaces = os.networkInterfaces();
+  Object.values(ifaces).flat().forEach((a) => {
+    if (a && a.mac && a.mac !== "00:00:00:00:00:00") {
+      trustedMacs.add(a.mac.toUpperCase());
+    }
+  });
+  // Trust the AP/gateway MAC from config known networks
+  config.knownNetworks.forEach((n) => {
+    if (n.bssid) trustedMacs.add(n.bssid.toUpperCase());
+  });
+  console.log(`✓ Auto-trusted ${trustedMacs.size} MACs (own interfaces + configured networks)`);
+}
+
+// Register own IPs with the NetworkAnalyzer so it never alerts on our own traffic
+{
+  const ifaces = os.networkInterfaces();
+  Object.values(ifaces).flat().forEach((a) => {
+    if (a && a.family === "IPv4" && !a.internal) addOwnIp(a.address);
+  });
+}
+
+// ── Own machine IPs — computed once for Snort/ML filtering ───────────────────
+const OWN_IPS = new Set<string>(
+  Object.values(os.networkInterfaces()).flat()
+    .filter((a): a is import("os").NetworkInterfaceInfo => !!a && a.family === "IPv4" && !a.internal)
+    .map((a) => a.address)
+);
+const BACKEND_IP_PREFIXES = [
+  "3.132.", "3.151.", "18.219.", "52.54.", "98.84.",
+  "32.195.", "32.192.", "54.80.", "96.45.", "127.", "169.254.",
+];
+function isFilteredIp(ip?: string): boolean {
+  if (!ip) return true;
+  if (OWN_IPS.has(ip)) return true;
+  return BACKEND_IP_PREFIXES.some((p) => ip.startsWith(p));
+}
 
 // Detection state
 const deauthTracker: Map<string, { count: number; windowStart: number }> = new Map();
 const ssidBssidMap: Map<string, Set<string>> = new Map();
 // Track known channel per BSSID for channel anomaly detection
 const bssidChannelMap: Map<string, number> = new Map();
+// Per-MAC dedup tracker for UNAUTHORIZED_DEVICE (one alert per new MAC ever)
+const unauthorizedAlerted: Set<string> = new Set();
 
 // Traffic stats
 interface TrafficBucket {
@@ -383,7 +481,7 @@ let mlResults: MLResultEntry[] = [];
 
 // ── Live Packet Capture + Network Analyzer ────────────────────────────────────
 const captureEngine = new PacketCaptureEngine(
-  process.env.CAPTURE_IFACE ?? "en0",
+  ACTIVE_IFACE,
   process.env.CAPTURE_FILTER ?? ""
 );
 const networkAnalyzer = new NetworkAnalyzer();
@@ -423,42 +521,68 @@ networkAnalyzer.on("alert", (na: NetworkAlert) => {
 captureEngine.on("packet", (pkt: CapturedPacket) => {
   networkAnalyzer.processPacket(pkt);
 
-  // Run Snort rules against captured packet
-  for (const rule of snortRules) {
-    if (matchSnortRule(rule, pkt)) {
-      addAlert({
-        type: "ANOMALY",
-        severity: rule.priority === 1 ? "high" : rule.priority === 2 ? "medium" : "low",
-        targetMac: pkt.srcMac,
-        description: `[SID:${rule.sid}] ${rule.msg} — src: ${pkt.srcIp ?? pkt.srcMac} → dst: ${pkt.dstIp ?? pkt.dstMac}`,
-        details: { sid: rule.sid, rule: rule.msg, srcIp: pkt.srcIp, dstIp: pkt.dstIp, srcPort: pkt.srcPort, dstPort: pkt.dstPort, method: "snort" },
-      }, config.dedupWindowMs);
+  // ── Bridge real captured packet → WiFi detection engine ──────────────────
+  // Ethernet frames from a WiFi interface carry real 802.3 traffic.
+  // We map them to the WiFiPacket shape so Rogue AP, Deauth, MAC Spoof,
+  // Channel Anomaly, and Unauthorized Device detection all run.
+  // Port Scan and Brute Force are intentionally skipped here — those are
+  // handled by the NetworkAnalyzer (TCP/UDP layer) which has proper context.
+  const wifiPkt: WiFiPacket = {
+    timestamp: pkt.timestamp,
+    bssid: pkt.dstMac,
+    sourceMac: pkt.srcMac,
+    destMac: pkt.dstMac,
+    // Only classify as deauth/mgmt when we have real 802.11 frame type hints.
+    // For plain Ethernet, use "data" so brute-force/port-scan don't false-fire.
+    type: "data",
+    signalStrength: -50,
+    channel: config.knownNetworks[0]?.channel ?? 1,
+    ssid: undefined,
+  };
+  // Only run the WiFi detection checks that make sense for Ethernet capture:
+  // unauthorized device, rogue AP (if SSID is known), channel anomaly.
+  // Skip port scan and brute force — those come from networkAnalyzer alerts.
+  detectionEngine.processPacketEthernetMode(wifiPkt);
+
+  // Run Snort rules — skip own machine and trusted backend IPs
+  if (pkt.srcIp && !isFilteredIp(pkt.srcIp)) {
+    for (const rule of snortRules) {
+      if (matchSnortRule(rule, pkt)) {
+        addAlert({
+          type: "ANOMALY",
+          severity: rule.priority === 1 ? "high" : rule.priority === 2 ? "medium" : "low",
+          targetMac: pkt.srcMac,
+          description: `[SID:${rule.sid}] ${rule.msg} — src: ${pkt.srcIp} → dst: ${pkt.dstIp ?? pkt.dstMac}`,
+          details: { sid: rule.sid, rule: rule.msg, srcIp: pkt.srcIp, dstIp: pkt.dstIp, srcPort: pkt.srcPort, dstPort: pkt.dstPort, method: "snort" },
+        }, config.dedupWindowMs * 5);
+      }
     }
   }
 
-  // NSL-KDD v2 ML inference on network packets
-  if (pkt.srcIp && pkt.protocol) {
+  // NSL-KDD v2 ML inference — skip own machine and trusted backend IPs
+  if (pkt.srcIp && pkt.protocol && !isFilteredIp(pkt.srcIp)) {
     const features = [
-      0,                                          // duration (unknown for single pkt)
-      pkt.protocol === 6 ? 0 : pkt.protocol === 17 ? 1 : 2, // protocol_type
-      pkt.length,                                 // src_bytes
-      0,                                          // dst_bytes
-      pkt.srcIp === pkt.dstIp ? 1 : 0,           // land
-      0,                                          // wrong_fragment
-      0,                                          // urgent
-      1,                                          // count
-      1,                                          // srv_count
-      (pkt.tcpFlags !== undefined && (pkt.tcpFlags & 0x02) && !(pkt.tcpFlags & 0x10)) ? 1 : 0, // serror_rate
+      0,
+      pkt.protocol === 6 ? 0 : pkt.protocol === 17 ? 1 : 2,
+      pkt.length,
+      0,
+      pkt.srcIp === pkt.dstIp ? 1 : 0,
+      0,
+      0,
+      1,
+      1,
+      (pkt.tcpFlags !== undefined && (pkt.tcpFlags & 0x02) && !(pkt.tcpFlags & 0x10)) ? 1 : 0,
     ];
     onnxInferV2(features).then(({ classIndex, className, confidence }) => {
-      if (classIndex > 0 && confidence > 0.7) {
+      // Require very high confidence (≥0.92) to avoid false positives on normal traffic
+      if (classIndex > 0 && confidence >= 0.92) {
         addAlert({
           type: classIndex === 1 ? "DEAUTH_ATTACK" : classIndex === 2 ? "PORT_SCAN" : "ANOMALY",
           severity: classIndex === 1 ? "high" : classIndex === 2 ? "medium" : "high",
           targetMac: pkt.srcMac,
           description: `NSL-KDD ML (v2): ${pkt.srcIp} classified as ${className} (confidence: ${(confidence * 100).toFixed(0)}%).`,
           details: { srcIp: pkt.srcIp, dstIp: pkt.dstIp, className, confidence, classIndex, model: "wids_rf_v2", method: "ml-nslkdd" },
-        }, config.dedupWindowMs * 3);
+        }, 300_000); // 5-minute dedup per MAC+type
       }
     });
   }
@@ -549,8 +673,9 @@ const detectionEngine = {
       }
     }
 
-    // 5. Unauthorized device — new MAC not in trusted list
-    if (!trustedMacs.has(packet.sourceMac) && !devices.has(packet.sourceMac)) {
+    // 5. Unauthorized device — new MAC not in trusted list, alert only once per MAC
+    if (!trustedMacs.has(packet.sourceMac.toUpperCase()) && !unauthorizedAlerted.has(packet.sourceMac)) {
+      unauthorizedAlerted.add(packet.sourceMac);
       addAlert({
         type: "UNAUTHORIZED_DEVICE",
         severity: "low",
@@ -682,33 +807,173 @@ const detectionEngine = {
       existing.lastSeen = Date.now();
       existing.avgSignal = Math.round((existing.avgSignal + packet.signalStrength) / 2);
       if (packet.ssid && !existing.ssid) existing.ssid = packet.ssid;
-      // No broadcast on update — lastSeen/signal changes are noise
+
+      // Try to enrich IP from ARP table if not yet resolved
+      if (!existing.ipAddress) {
+        const arpEntry = networkAnalyzer.getArpTable().find((e) => e.mac === packet.sourceMac);
+        const resolvedIp = arpEntry?.ip ?? undefined;
+        if (resolvedIp) {
+          existing.ipAddress = resolvedIp;
+          resolveHostname(resolvedIp).then((hostname) => {
+            if (hostname && existing) {
+              existing.hostname = hostname;
+              dbWrite(db.database.from("devices").update({
+                ip_address: resolvedIp,
+                hostname,
+                updated_at: new Date().toISOString(),
+              }).eq("mac", existing.mac), "device hostname update");
+            }
+          });
+          dbWrite(db.database.from("devices").update({
+            ip_address: resolvedIp,
+            updated_at: new Date().toISOString(),
+          }).eq("mac", existing.mac), "device ip update");
+        }
+      }
     } else {
+      // Resolve IP from live ARP table only — no fake IPs
+      const arpEntry = networkAnalyzer.getArpTable().find((e) => e.mac === packet.sourceMac);
+      const ipAddress = arpEntry?.ip ?? undefined;
+
       const newDevice: Device = {
         mac: packet.sourceMac,
         firstSeen: Date.now(),
         lastSeen: Date.now(),
-        status: trustedMacs.has(packet.sourceMac) ? "trusted" : "unknown",
+        status: trustedMacs.has(packet.sourceMac.toUpperCase()) ? "trusted" : "unknown",
         ssid: packet.ssid,
         avgSignal: packet.signalStrength,
+        ipAddress,
       };
       devices.set(packet.sourceMac, newDevice);
-      // Push new device to clients immediately — no poll needed
+
+      // Async hostname resolution
+      if (ipAddress) {
+        resolveHostname(ipAddress).then((hostname) => {
+          if (hostname) {
+            newDevice.hostname = hostname;
+            dbWrite(db.database.from("devices").update({
+              hostname,
+              updated_at: new Date().toISOString(),
+            }).eq("mac", newDevice.mac), "device hostname");
+          }
+        });
+      }
+
       broadcastDevice(newDevice);
 
-      // ── Write new device to Insforge (triggers realtime device_update event) ──
-      db.database.from("devices").insert([{
+      // ── Write new device to Insforge (upsert to handle restarts) ──
+      dbWrite(db.database.from("devices").upsert([{
         mac: newDevice.mac,
         first_seen: newDevice.firstSeen,
         last_seen: newDevice.lastSeen,
         status: newDevice.status,
         ssid: newDevice.ssid ?? null,
         avg_signal: newDevice.avgSignal,
-      }]).then(({ error }) => {
-        if (error && !error.message?.includes("duplicate")) {
-          console.error("Insforge device insert error:", error);
+        ip_address: newDevice.ipAddress ?? null,
+        hostname: newDevice.hostname ?? null,
+      }]), "device upsert");
+    }
+  },
+
+  // ── Ethernet-mode processing ──────────────────────────────────────────────
+  // Called when packets come from a real Ethernet/WiFi capture (not 802.11 raw).
+  // Runs only the detections that are meaningful for Ethernet frames:
+  //   - Unauthorized device (new MAC)
+  //   - ML feature tracking + anomaly scoring
+  //   - Device registry update
+  // Skips: Rogue AP, MAC Spoofing, Deauth flood, Channel Anomaly, Port Scan,
+  //        Brute Force — those either need 802.11 headers or are handled by
+  //        the NetworkAnalyzer at the TCP/UDP layer.
+  processPacketEthernetMode: (packet: WiFiPacket) => {
+    totalPacketsProcessed++;
+    broadcastPacket(packet);
+    updateTrafficBucket(packet);
+
+    const { dedupWindowMs } = config;
+
+    // Unauthorized device — new MAC not in trusted list, alert only once per MAC
+    if (!trustedMacs.has(packet.sourceMac.toUpperCase()) && !unauthorizedAlerted.has(packet.sourceMac)) {
+      unauthorizedAlerted.add(packet.sourceMac);
+      addAlert({
+        type: "UNAUTHORIZED_DEVICE",
+        severity: "low",
+        targetMac: packet.sourceMac,
+        description: `New unknown device on network: ${packet.sourceMac}.`,
+        details: { channel: packet.channel, signal: packet.signalStrength },
+      }, dedupWindowMs);
+    }
+
+    // ML feature tracking — same as full processPacket
+    {
+      const now = Date.now();
+      let feat = deviceFeatures.get(packet.sourceMac);
+      if (!feat || now - feat.windowStart > ML_WINDOW_MS) {
+        if (feat && feat.packetCount > 0) {
+          const elapsed = (now - feat.windowStart) / 1000 || 1;
+          const packetRate = feat.packetCount / elapsed;
+          updateBaseline(packetRate);
+          const deauthRatio = feat.deauthCount / (feat.packetCount || 1);
+          const beaconRatio = feat.beaconCount / (feat.packetCount || 1);
+          const uniqueChannels = feat.uniqueChannels.size;
+          const avgSig = devices.get(packet.sourceMac)?.avgSignal ?? packet.signalStrength;
+          const avgSignalNorm = Math.max(0, Math.min(1, (avgSig + 100) / 80));
+          const featureVec = [packetRate, deauthRatio, beaconRatio, uniqueChannels, avgSignalNorm];
+          const mac = packet.sourceMac;
+          onnxInfer(featureVec).then(({ score, classIndex }) => {
+            const classification: MLResultEntry["classification"] =
+              classIndex === 2 ? "malicious" : classIndex === 1 ? "suspicious" : "normal";
+            const result: MLResultEntry = {
+              mac, timestamp: Date.now(), score, classification,
+              features: { packetRate, avgSignal: avgSig, uniqueChannels, deauthRatio, beaconRatio },
+            };
+            const idx = mlResults.findIndex((r) => r.mac === mac);
+            if (idx >= 0) mlResults[idx] = result; else mlResults.unshift(result);
+            if (mlResults.length > 50) mlResults.pop();
+            if (classIndex === 2) {
+              addAlert({
+                type: "ANOMALY", severity: "high", targetMac: mac,
+                description: `ML: ${mac} classified as MALICIOUS (score: ${(score * 100).toFixed(0)}%). Packet rate: ${packetRate.toFixed(1)}/s.`,
+                details: { ...result.features, mlScore: score, classIndex, method: "onnx-rf" },
+              }, config.dedupWindowMs * 2);
+            }
+          });
         }
-      });
+        deviceFeatures.set(packet.sourceMac, {
+          packetCount: 1, deauthCount: 0, beaconCount: 0, mgmtCount: 0,
+          uniqueChannels: new Set([packet.channel]), windowStart: now,
+        });
+      } else {
+        feat.packetCount++;
+        feat.uniqueChannels.add(packet.channel);
+      }
+    }
+
+    // Update device registry
+    const existing = devices.get(packet.sourceMac);
+    if (existing) {
+      existing.lastSeen = Date.now();
+      if (!existing.ipAddress) {
+        const arpEntry = networkAnalyzer.getArpTable().find((e) => e.mac === packet.sourceMac);
+        if (arpEntry?.ip) {
+          existing.ipAddress = arpEntry.ip;
+          dbWrite(db.database.from("devices").update({ ip_address: arpEntry.ip, updated_at: new Date().toISOString() }).eq("mac", existing.mac), "device ip");
+        }
+      }
+    } else {
+      const arpEntry = networkAnalyzer.getArpTable().find((e) => e.mac === packet.sourceMac);
+      const ipAddress = arpEntry?.ip ?? undefined;
+      const newDevice: Device = {
+        mac: packet.sourceMac, firstSeen: Date.now(), lastSeen: Date.now(),
+        status: trustedMacs.has(packet.sourceMac.toUpperCase()) ? "trusted" : "unknown",
+        ssid: undefined, avgSignal: packet.signalStrength, ipAddress,
+      };
+      devices.set(packet.sourceMac, newDevice);
+      broadcastDevice(newDevice);
+      dbWrite(db.database.from("devices").upsert([{
+        mac: newDevice.mac, first_seen: newDevice.firstSeen, last_seen: newDevice.lastSeen,
+        status: newDevice.status, ssid: null, avg_signal: newDevice.avgSignal,
+        ip_address: newDevice.ipAddress ?? null, hostname: null,
+      }]), "device upsert");
     }
   },
 };
@@ -722,15 +987,13 @@ function updateTrafficBucket(packet: WiFiPacket) {
 
       // ── Persist completed bucket to Insforge ──
       const bucket = currentBucket;
-      db.database.from("traffic_buckets").insert([{
+      dbWrite(db.database.from("traffic_buckets").insert([{
         time: bucket.time,
         data_count: bucket.data,
         beacons_count: bucket.beacons,
         deauth_count: bucket.deauth,
         mgmt_count: bucket.mgmt,
-      }]).then(({ error }) => {
-        if (error) console.error("Insforge traffic bucket insert error:", error);
-      });
+      }]), "traffic bucket");
     }
     bucketStartTime = now;
     const label = new Date(now).toLocaleTimeString("en-US", {
@@ -766,7 +1029,7 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
   saveAlerts(alerts);
 
   // ── Write to Insforge DB (triggers realtime broadcast to frontend) ──
-  db.database.from("alerts").insert([{
+  dbWrite(db.database.from("alerts").insert([{
     id: newAlert.id,
     timestamp: newAlert.timestamp,
     type: newAlert.type,
@@ -775,24 +1038,20 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
     target_mac: newAlert.targetMac,
     details: newAlert.details,
     dismissed: false,
-  }]).then(({ error }) => {
-    if (error) console.error("Insforge alert insert error:", error);
-  });
+  }]), "alert insert");
 
-  // Update detection_stats running totals
+  // Update detection_stats running totals (best-effort, non-blocking)
   db.database.from("detection_stats").select().eq("id", 1).maybeSingle().then(({ data }) => {
     if (!data) return;
     const dc = { ...(data.detection_counts ?? {}), [alertData.type]: (data.detection_counts?.[alertData.type] ?? 0) + 1 };
-    db.database.from("detection_stats").update({
+    dbWrite(db.database.from("detection_stats").update({
       detection_counts: dc,
       total_packets_processed: totalPacketsProcessed,
       updated_at: new Date().toISOString(),
-    }).eq("id", 1).then(({ error }) => {
-      if (error) console.error("Insforge stats update error:", error);
-    });
-  });
+    }).eq("id", 1), "stats update");
+  }).catch(() => {});
 
-  // Broadcast alert using named SSE event type "alert"
+  // Broadcast alert via SSE to connected browser clients
   const payload = JSON.stringify(newAlert);
   sseClients.forEach((client) => client.write(`event: alert\ndata: ${payload}\n\n`));
 }
@@ -811,152 +1070,6 @@ function broadcastDevice(device: Device) {
   sseClients.forEach((client) => client.write(`event: device\ndata: ${payload}\n\n`));
 }
 
-// --- Simulator ---
-function startSimulator() {
-  // Seed SSID→BSSID map from config
-  config.knownNetworks.forEach((n) => {
-    ssidBssidMap.set(n.ssid, new Set([n.bssid]));
-    bssidChannelMap.set(n.bssid, n.channel);
-  });
-
-  // Seed known devices
-  const seedDevices = [
-    { mac: "00:11:22:33:44:55", ssid: "Enterprise_Secure_WiFi" },
-    { mac: "AA:BB:CC:DD:EE:FF", ssid: "Enterprise_Secure_WiFi" },
-    { mac: "11:22:33:44:55:66", ssid: "Guest_WiFi" },
-  ];
-  seedDevices.forEach((d) => {
-    devices.set(d.mac, {
-      mac: d.mac,
-      firstSeen: Date.now() - Math.random() * 3_600_000,
-      lastSeen: Date.now(),
-      status: trustedMacs.has(d.mac) ? "trusted" : "unknown",
-      ssid: d.ssid,
-      avgSignal: -45 - Math.random() * 20,
-    });
-  });
-
-  const KNOWN_AP_BSSID = config.knownNetworks[0]?.bssid ?? "DE:AD:BE:EF:00:01";
-  const KNOWN_SSID = config.knownNetworks[0]?.ssid ?? "Enterprise_Secure_WiFi";
-
-  let deauthBurstActive = false;
-  let deauthBurstCount = 0;
-
-  setInterval(() => {
-    const randByte = () =>
-      Math.floor(Math.random() * 255).toString(16).padStart(2, "0").toUpperCase();
-
-    // Normal data traffic — trusted devices
-    detectionEngine.processPacket({
-      timestamp: Date.now(), bssid: KNOWN_AP_BSSID, ssid: KNOWN_SSID,
-      sourceMac: "00:11:22:33:44:55", type: "data",
-      signalStrength: -40 - Math.random() * 20, channel: 6,
-    });
-
-    if (Math.random() > 0.6) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), bssid: KNOWN_AP_BSSID, ssid: KNOWN_SSID,
-        sourceMac: "AA:BB:CC:DD:EE:FF", type: "data",
-        signalStrength: -50 - Math.random() * 15, channel: 6,
-      });
-    }
-
-    // Beacon frames from legitimate AP
-    if (Math.random() > 0.7) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), bssid: KNOWN_AP_BSSID, ssid: KNOWN_SSID,
-        sourceMac: KNOWN_AP_BSSID, type: "beacons",
-        signalStrength: -30 - Math.random() * 10, channel: 6,
-      });
-    }
-
-    // Management frames (probe requests, association, etc.)
-    if (Math.random() > 0.65) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), bssid: KNOWN_AP_BSSID,
-        sourceMac: Math.random() > 0.5 ? "00:11:22:33:44:55" : "AA:BB:CC:DD:EE:FF",
-        type: "mgmt", signalStrength: -55 - Math.random() * 20, channel: 6,
-      });
-    }
-
-    // Unknown device appearing
-    if (Math.random() > 0.95) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), bssid: KNOWN_AP_BSSID,
-        sourceMac: `00:DE:AD:${randByte()}:${randByte()}:01`,
-        type: "data", signalStrength: -70 - Math.random() * 20, channel: 6,
-      });
-    }
-
-    // Deauth burst
-    if (!deauthBurstActive && Math.random() > 0.992) {
-      deauthBurstActive = true;
-      deauthBurstCount = 0;
-    }
-    if (deauthBurstActive) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), bssid: KNOWN_AP_BSSID,
-        sourceMac: "C0:FF:EE:AT:TA:CK", destMac: "00:11:22:33:44:55",
-        type: "deauth", signalStrength: -30, channel: 6,
-      });
-      deauthBurstCount++;
-      if (deauthBurstCount >= config.deauthThreshold + 2) deauthBurstActive = false;
-    }
-
-    // Rogue AP (Evil Twin)
-    if (Math.random() > 0.993) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), ssid: KNOWN_SSID, bssid: "FA:KE:AP:00:11:22",
-        sourceMac: "FA:KE:AP:00:11:22", type: "beacons",
-        signalStrength: -20, channel: 1,
-      });
-    }
-
-    // MAC Spoofing — new BSSID for known SSID
-    if (Math.random() > 0.997) {
-      const spoofedBssid = `SP:00:FE:${randByte()}:${randByte()}:${randByte()}`;
-      detectionEngine.processPacket({
-        timestamp: Date.now(), ssid: "Guest_WiFi", bssid: spoofedBssid,
-        sourceMac: spoofedBssid, type: "beacons",
-        signalStrength: -35, channel: 11,
-      });
-    }
-
-    // Channel anomaly — legitimate AP suddenly on wrong channel
-    if (Math.random() > 0.998) {
-      detectionEngine.processPacket({
-        timestamp: Date.now(), ssid: KNOWN_SSID, bssid: KNOWN_AP_BSSID,
-        sourceMac: KNOWN_AP_BSSID, type: "beacons",
-        signalStrength: -25, channel: 11, // wrong channel
-      });
-    }
-
-    // Port Scan — device probing many BSSIDs rapidly
-    if (Math.random() > 0.985) {
-      const scannerMac = `SC:4N:${randByte()}:${randByte()}:${randByte()}:01`;
-      for (let i = 0; i < PORT_SCAN_THRESHOLD + 1; i++) {
-        detectionEngine.processPacket({
-          timestamp: Date.now(), bssid: `${randByte()}:${randByte()}:${randByte()}:${randByte()}:${randByte()}:${randByte()}`,
-          sourceMac: scannerMac, type: "mgmt",
-          signalStrength: -60 - Math.random() * 20, channel: Math.ceil(Math.random() * 13),
-        });
-      }
-    }
-
-    // Brute Force — repeated mgmt frames from same source
-    if (Math.random() > 0.988) {
-      const attackerMac = `BF:${randByte()}:${randByte()}:${randByte()}:${randByte()}:01`;
-      for (let i = 0; i < BRUTE_FORCE_THRESHOLD + 2; i++) {
-        detectionEngine.processPacket({
-          timestamp: Date.now(), bssid: KNOWN_AP_BSSID, ssid: KNOWN_SSID,
-          sourceMac: attackerMac, type: "mgmt",
-          signalStrength: -45 - Math.random() * 10, channel: 6,
-        });
-      }
-    }
-  }, 500);
-}
-
 // --- Server ---
 async function startServer() {
   const app = express();
@@ -966,6 +1079,78 @@ async function startServer() {
   // GET /api/ml-results
   app.get("/api/ml-results", (_req, res) => {
     res.json(mlResults);
+  });
+
+  // ── User Session Management ───────────────────────────────────────────────
+  // POST /api/session/register — called by frontend on login
+  // Registers the user's active session so other users can see who's online
+  app.post("/api/session/register", async (req, res) => {
+    const { userId, email, name, avatarUrl } = req.body;
+    if (!userId || !email) return res.status(400).json({ error: "userId and email required" });
+
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim()
+      ?? req.socket.remoteAddress
+      ?? "unknown";
+
+    // Derive subnet from IP (e.g. 192.168.100.x → 192.168.100)
+    const subnet = ip.split(".").slice(0, 3).join(".");
+    const now = Date.now();
+    const sessionId = `${userId}-${now}`;
+
+    // Upsert session — one active session per user
+    dbWrite(db.database.from("user_sessions").upsert([{
+      id: sessionId,
+      user_id: userId,
+      email,
+      name: name ?? null,
+      avatar_url: avatarUrl ?? null,
+      ip_address: ip,
+      subnet,
+      connected_at: now,
+      last_seen_at: now,
+      is_active: true,
+    }]), "session register");
+
+    // Broadcast to SSE clients so other users see the new session immediately
+    const payload = JSON.stringify({ type: "session_join", userId, email, name, ip, subnet });
+    sseClients.forEach((c) => c.write(`event: session\ndata: ${payload}\n\n`));
+
+    res.json({ sessionId, ip, subnet });
+  });
+
+  // POST /api/session/heartbeat — called every 30s to keep session alive
+  app.post("/api/session/heartbeat", async (req, res) => {
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+    dbWrite(db.database.from("user_sessions").update({
+      last_seen_at: Date.now(),
+      is_active: true,
+    }).eq("id", sessionId), "session heartbeat");
+    res.json({ ok: true });
+  });
+
+  // POST /api/session/leave — called on sign-out or page unload
+  app.post("/api/session/leave", async (req, res) => {
+    const { sessionId, userId, email } = req.body;
+    if (sessionId) {
+      dbWrite(db.database.from("user_sessions").update({ is_active: false }).eq("id", sessionId), "session leave");
+    }
+    const payload = JSON.stringify({ type: "session_leave", userId, email });
+    sseClients.forEach((c) => c.write(`event: session\ndata: ${payload}\n\n`));
+    res.json({ ok: true });
+  });
+
+  // GET /api/sessions/active — returns all users currently viewing the dashboard
+  app.get("/api/sessions/active", async (_req, res) => {
+    // Sessions active in the last 60s
+    const cutoff = Date.now() - 60_000;
+    const { data, error } = await db.database
+      .from("user_sessions")
+      .select()
+      .eq("is_active", true)
+      .gt("last_seen_at", cutoff);
+    if (error) return res.json([]);
+    res.json(data ?? []);
   });
 
   // GET /api/snort-rules — live Snort rules (file-based)
@@ -1047,10 +1232,11 @@ async function startServer() {
       activeAlerts: alerts.length,
       totalDevices: devices.size,
       uptime: process.uptime(),
-      monitoring: true,
+      monitoring: captureEngine.isLive(),
       totalPacketsProcessed,
       detectionCounts,
       trustedDevices: trustedMacs.size,
+      activeInterface: ACTIVE_IFACE,
     });
   });
 
@@ -1076,7 +1262,16 @@ async function startServer() {
   });
 
   // GET /api/devices
-  app.get("/api/devices", (_req, res) => res.json(Array.from(devices.values())));
+  app.get("/api/devices", (_req, res) => res.json(Array.from(devices.values()).map((d) => ({
+    mac: d.mac,
+    first_seen: d.firstSeen,
+    last_seen: d.lastSeen,
+    status: d.status,
+    ssid: d.ssid ?? null,
+    avg_signal: d.avgSignal,
+    ip_address: d.ipAddress ?? null,
+    hostname: d.hostname ?? null,
+  }))));
 
   // POST /api/devices/:mac/status
   app.post("/api/devices/:mac/status", (req, res) => {
@@ -1095,13 +1290,19 @@ async function startServer() {
       broadcastDevice(device);
     }
     if (status === "trusted") {
-      trustedMacs.add(mac);
+      trustedMacs.add(mac.toUpperCase());
+      unauthorizedAlerted.delete(mac);
     } else {
-      trustedMacs.delete(mac);
+      trustedMacs.delete(mac.toUpperCase());
     }
     // Persist trusted MACs back to config
     config.trustedMacs = [...trustedMacs];
     saveConfig(config);
+    // Sync status to InsForge DB
+    dbWrite(db.database.from("devices").update({
+      status,
+      updated_at: new Date().toISOString(),
+    }).eq("mac", mac), "device status update");
     res.json({ message: "Status updated", status, mac });
   });
 
@@ -1198,25 +1399,43 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`SALAMANDA WIDS running on http://localhost:${PORT}`);
-    startSimulator();
 
-    // ── Start live packet capture (falls back to simulator if no privileges) ──
+    // ── Clear stale dismissed/old alerts from DB on startup ──────────────────
+    dbWrite(
+      db.database.from("alerts").update({ dismissed: true })
+        .lt("timestamp", Date.now() - 86_400_000),
+      "startup alert cleanup"
+    );
+
+    // ── Seed SSID→BSSID and channel maps from saved config ──
+    // This primes the detection engine with known-good networks so Rogue AP
+    // and Channel Anomaly detection work from the very first real packet.
+    config.knownNetworks.forEach((n) => {
+      ssidBssidMap.set(n.ssid, new Set([n.bssid]));
+      bssidChannelMap.set(n.bssid, n.channel);
+    });
+
+    // ── Start live packet capture on the active WiFi interface ──
     captureEngine.start().then((live) => {
       if (live) {
-        console.log(`✓ Live capture active on ${process.env.CAPTURE_IFACE ?? "en0"}`);
+        console.log(`✓ Live capture active on ${ACTIVE_IFACE} — capturing real network traffic`);
       } else {
-        console.log("ℹ Simulator mode active (run with sudo for live capture)");
+        console.error(`✗ Live capture FAILED on ${ACTIVE_IFACE}.`);
+        console.error("  Run once to grant capture permissions without sudo:");
+        console.error("    macOS:  sudo npm run setup:capture");
+        console.error("    Linux:  sudo npm run setup:capture:linux");
+        console.error("  Then restart:  npm run dev");
+        process.exit(1);
       }
     });
 
-    // ── Sync packet count to Insforge every 30s ──
+    // ── Sync packet count + detection stats to Insforge every 30s ──
     setInterval(() => {
-      db.database.from("detection_stats").update({
+      dbWrite(db.database.from("detection_stats").update({
+        detection_counts: detectionCounts,
         total_packets_processed: totalPacketsProcessed,
         updated_at: new Date().toISOString(),
-      }).eq("id", 1).then(({ error }) => {
-        if (error) console.error("Insforge stats sync error:", error);
-      });
+      }).eq("id", 1), "stats sync");
     }, 30_000);
   });
 }

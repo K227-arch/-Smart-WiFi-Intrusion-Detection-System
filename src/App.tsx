@@ -9,6 +9,7 @@ import { insforge } from "./lib/insforge";
 import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
+import { useSession } from "./hooks/useSession";
 import { formatUptime, formatNumber, cn } from "./lib/utils";
 
 import { Header } from "./components/Header";
@@ -34,16 +35,24 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
+    // Check for OAuth callback — InsForge puts insforge_code in the URL after redirect
+    const params = new URLSearchParams(window.location.search);
+    const hasOAuthCode = params.has("insforge_code") || params.has("code");
+
     insforge.auth.getCurrentUser().then(({ data }) => {
       setIsAuthenticated(!!data?.user);
       setAuthChecked(true);
+      // Clean up OAuth params from URL without triggering a reload
+      if (hasOAuthCode) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
     });
   }, []);
 
   if (!authChecked) {
     return (
       <div className="h-screen w-full bg-slate-950 flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -183,6 +192,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
     engineConfig,
     newAlertCount,
     mlResults,
+    isLoading,
     clearAlertBadge,
     updateDeviceStatus,
     dismissAlert,
@@ -191,12 +201,13 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
     refetch: fetchData,
   } = useWidsData();
 
-  const [currentUser, setCurrentUser] = useState<{ email: string; name?: string; avatar_url?: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ email: string; name?: string; avatar_url?: string; id?: string } | null>(null);
 
   useEffect(() => {
     insforge.auth.getCurrentUser().then(({ data }) => {
       if (data?.user) {
         setCurrentUser({
+          id: data.user.id,
           email: data.user.email,
           name: data.user.profile?.name ?? undefined,
           avatar_url: data.user.profile?.avatar_url ?? undefined,
@@ -204,6 +215,14 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
       }
     });
   }, []);
+
+  // ── Multi-user session tracking ───────────────────────────────────────────
+  const { activeUsers } = useSession({
+    userId: currentUser?.id ?? "anonymous",
+    email: currentUser?.email ?? "",
+    name: currentUser?.name,
+    avatarUrl: currentUser?.avatar_url,
+  });
 
   const [selectedTab, setSelectedTab] = useState<TabId>("dashboard");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -260,6 +279,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
         onRefresh={fetchData}
         user={currentUser}
         onSignOut={handleSignOut}
+        activeUsers={activeUsers}
       />
 
       <main className="flex-1 flex flex-col lg:grid lg:grid-cols-12 gap-0 overflow-hidden relative">
@@ -281,7 +301,16 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
         )}
 
         {/* Main content area */}
-        <section className="flex-1 lg:col-span-7 p-4 md:p-6 overflow-y-auto lg:overflow-hidden flex flex-col gap-6 custom-scrollbar">
+        <section className="flex-1 lg:col-span-7 p-4 md:p-6 overflow-y-auto lg:overflow-hidden flex flex-col gap-6 custom-scrollbar relative">
+          {/* Initial data loading overlay */}
+          {isLoading && (
+            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm z-20 flex items-center justify-center">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 h-8 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-[11px] text-amber-400 font-mono uppercase tracking-widest">Loading data…</span>
+              </div>
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {selectedTab === "dashboard" && (
               <Fragment key="dashboard">
@@ -398,7 +427,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
           <span className={cn("font-bold uppercase hidden sm:inline", status?.monitoring ? "text-emerald-500" : "text-rose-500")}>
             {status?.monitoring ? "Engine Active" : "Engine Offline"}
           </span>
-          <span className="text-sky-500 font-bold uppercase whitespace-nowrap">SALAMANDA v2.0</span>
+          <span className="text-amber-500 font-bold uppercase whitespace-nowrap">SALAMANDA v2.0</span>
         </div>
       </footer>
 

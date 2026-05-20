@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Eye, EyeOff, Loader2, AlertCircle } from "lucide-react";
+import { Eye, EyeOff, Loader2, AlertCircle } from "lucide-react";
 import { insforge } from "../lib/insforge";
 import { SalamandaLogo } from "../components/SalamandaLogo";
 
@@ -38,6 +38,11 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           setVerifyPending(true);
         } else if (data?.accessToken) {
           onLogin();
+        } else {
+          // Account created — try signing in directly
+          const { data: signInData, error: signInErr } = await insforge.auth.signInWithPassword({ email, password });
+          if (signInErr) throw new Error(signInErr.message);
+          if (signInData?.accessToken) onLogin();
         }
       } else {
         const { data, error: err } = await insforge.auth.signInWithPassword({
@@ -70,16 +75,24 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   };
 
   const handleOAuth = async (provider: "github" | "google") => {
-    await insforge.auth.signInWithOAuth({
-      provider,
-      redirectTo: window.location.origin,
-    });
+    setError(null);
+    setLoading(true);
+    try {
+      await insforge.auth.signInWithOAuth({
+        provider,
+        redirectTo: window.location.origin,
+      });
+      // SDK auto-redirects to provider — loading stays true during redirect
+    } catch (err: any) {
+      setError(err.message ?? "OAuth sign-in failed");
+      setLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
       {/* Background grid */}
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(14,165,233,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(14,165,233,0.03)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(245,158,11,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(245,158,11,0.04)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -88,15 +101,17 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       >
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center">
-              <Shield className="w-5 h-5 text-sky-400" />
-            </div>
-            <SalamandaLogo className="h-7" />
+          <div className="flex items-center gap-3 mb-3">
+            <SalamandaLogo className="h-20 w-20" />
           </div>
-          <p className="text-slate-500 text-xs mt-1 uppercase tracking-widest font-mono">
-            Wireless Intrusion Detection System
-          </p>
+          <div className="text-center">
+            <h1 className="text-2xl font-black tracking-tight text-white">
+              SALA<span className="text-amber-500">MANDA</span>
+            </h1>
+            <p className="text-slate-500 text-[10px] mt-1 uppercase tracking-widest font-mono">
+              Network Intrusion Detection System
+            </p>
+          </div>
         </div>
 
         {/* Card */}
@@ -107,7 +122,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               <div className="text-center mb-6">
                 <h2 className="text-white font-bold text-lg">Verify your email</h2>
                 <p className="text-slate-400 text-sm mt-1">
-                  Enter the 6-digit code sent to <span className="text-sky-400">{email}</span>
+                  Enter the 6-digit code sent to <span className="text-amber-400">{email}</span>
                 </p>
               </div>
               <input
@@ -116,7 +131,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 value={otp}
                 onChange={(e) => setOtp(e.target.value)}
                 maxLength={6}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white text-center text-2xl tracking-widest font-mono focus:outline-none focus:border-sky-500 transition-colors"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white text-center text-2xl tracking-widest font-mono focus:outline-none focus:border-amber-500 transition-colors"
                 required
               />
               {error && (
@@ -127,7 +142,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+                className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
               >
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
                 Verify Email
@@ -143,7 +158,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                     onClick={() => { setMode(m); setError(null); }}
                     className={`flex-1 py-2 text-sm font-semibold rounded-md transition-all ${
                       mode === m
-                        ? "bg-sky-600 text-white shadow"
+                        ? "bg-amber-600 text-white shadow"
                         : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
@@ -163,7 +178,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                       placeholder="John Doe"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition-colors text-sm"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors text-sm"
                     />
                   </div>
                 )}
@@ -177,7 +192,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                     placeholder="admin@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition-colors text-sm"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors text-sm"
                     required
                   />
                 </div>
@@ -192,7 +207,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                       placeholder="••••••••"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 pr-11 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition-colors text-sm"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 pr-11 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors text-sm"
                       required
                       minLength={6}
                     />
@@ -215,7 +230,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2 mt-2"
+                  className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2 mt-2"
                 >
                   {loading && <Loader2 className="w-4 h-4 animate-spin" />}
                   {mode === "signin" ? "Sign In" : "Create Account"}
@@ -258,7 +273,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
         </div>
 
         <p className="text-center text-slate-600 text-xs mt-6 font-mono">
-          SALAMANDA WIDS v2.0 — Secured by InsForge
+          SALAMANDA NIDS v2.0 — Secured by InsForge
         </p>
       </motion.div>
     </div>

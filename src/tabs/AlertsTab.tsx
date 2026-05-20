@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, Download, ShieldCheck, Trash2, X } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format } from "date-fns";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { cn } from "../lib/utils";
 import { ALERT_TYPE_META } from "../lib/alertMeta";
 import type { Alert } from "../types";
@@ -42,7 +42,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-300 font-mono focus:outline-none focus:border-sky-500"
+            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-300 font-mono focus:outline-none focus:border-amber-500"
           >
             <option value="ALL">All Types</option>
             <option value="ROGUE_AP">Rogue AP</option>
@@ -57,7 +57,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
           <select
             value={severityFilter}
             onChange={(e) => setSeverityFilter(e.target.value as SeverityFilter)}
-            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-300 font-mono focus:outline-none focus:border-sky-500"
+            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-300 font-mono focus:outline-none focus:border-amber-500"
           >
             <option value="ALL">All Severity</option>
             <option value="high">High</option>
@@ -66,7 +66,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
           </select>
           <button
             onClick={onExport}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 rounded text-[10px] font-bold text-sky-400 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded text-[10px] font-bold text-amber-400 transition-colors"
           >
             <Download className="w-3 h-3" /> Export CSV
           </button>
@@ -84,7 +84,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
       {/* Stats bar */}
       <div className="px-6 py-2 border-b border-slate-800 bg-slate-950/30 flex gap-4 text-[10px] text-slate-500 font-mono shrink-0">
         <span>Total: <span className="text-white font-bold">{alerts.length}</span></span>
-        <span>Filtered: <span className="text-sky-400 font-bold">{filtered.length}</span></span>
+        <span>Filtered: <span className="text-amber-400 font-bold">{filtered.length}</span></span>
         <span>High: <span className="text-rose-400 font-bold">{alerts.filter((a) => a.severity === "high").length}</span></span>
         <span>Medium: <span className="text-amber-400 font-bold">{alerts.filter((a) => a.severity === "medium").length}</span></span>
         <span>Low: <span className="text-slate-400 font-bold">{alerts.filter((a) => a.severity === "low").length}</span></span>
@@ -112,9 +112,8 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
                 const hasDetails = a.details && Object.keys(a.details).length > 0;
 
                 return (
-                  <>
+                  <Fragment key={a.id}>
                     <motion.tr
-                      key={a.id}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0, height: 0 }}
@@ -128,7 +127,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
                         {hasDetails && (
                           <button
                             onClick={() => setExpandedId(isExpanded ? null : a.id)}
-                            className="text-slate-600 hover:text-sky-400 transition-colors"
+                            className="text-slate-600 hover:text-amber-400 transition-colors"
                           >
                             {isExpanded
                               ? <ChevronDown className="w-3.5 h-3.5" />
@@ -154,7 +153,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
                           {a.severity}
                         </span>
                       </td>
-                      <td className="px-4 py-3 font-mono text-[10px] text-sky-400 max-w-[130px] truncate" title={a.targetMac}>
+                      <td className="px-4 py-3 font-mono text-[10px] text-amber-400 max-w-[130px] truncate" title={a.targetMac}>
                         {a.targetMac}
                       </td>
                       <td className="px-4 py-3 font-mono text-slate-500 text-[10px] whitespace-nowrap">
@@ -201,7 +200,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
                         </motion.tr>
                       )}
                     </AnimatePresence>
-                  </>
+                  </Fragment>
                 );
               })}
             </AnimatePresence>

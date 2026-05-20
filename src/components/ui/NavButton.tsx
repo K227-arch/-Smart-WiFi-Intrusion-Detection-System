@@ -14,7 +14,7 @@ export function NavButton({ active, onClick, children }: NavButtonProps) {
       className={cn(
         "w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-all focus:outline-none",
         active
-          ? "bg-sky-500/10 text-sky-400 border border-sky-500/20"
+          ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
           : "text-slate-400 hover:bg-slate-800"
       )}
     >

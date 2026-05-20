@@ -4,11 +4,16 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Salamanda brand colors (from logo) ── */
+  --color-brand: #F59E0B;       /* amber-500 — primary accent */
+  --color-brand-dark: #D97706;  /* amber-600 — hover/active */
+  --color-brand-light: #FCD34D; /* amber-300 — highlights */
 }
 
 :root {
   background-color: #020617; /* slate-950 */
-  color: #cbd5e1; /* slate-300 */
+  color: #cbd5e1;             /* slate-300 */
   color-scheme: dark;
 }
 

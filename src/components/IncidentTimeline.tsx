@@ -1,6 +1,5 @@
 import { Download, ShieldCheck } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { memo, useMemo } from "react";
 import { format } from "date-fns";
 import { cn } from "../lib/utils";
 import { ALERT_TYPE_META } from "../lib/alertMeta";
@@ -13,7 +12,7 @@ interface IncidentTimelineProps {
 
 export function IncidentTimeline({ alerts, onExport }: IncidentTimelineProps) {
   return (
-    <section className="hidden lg:flex lg:col-span-3 border-l border-slate-800 bg-slate-900/50 p-4 flex-col overflow-hidden">
+    <section className="hidden lg:flex lg:col-span-3 border-l border-slate-800 bg-slate-900/50 p-4 flex-col overflow-hidden h-full">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">
           Incident Timeline

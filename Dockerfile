@@ -22,22 +22,23 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Runtime deps for native modules
-RUN apk add --no-cache libpcap
+# Runtime deps for native modules + libcap for capability setting
+RUN apk add --no-cache libpcap libcap
 
 COPY package*.json ./
-# Install only production deps (express, @insforge/sdk, etc.)
 RUN npm ci --omit=dev
 
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/dist/server.cjs ./dist/server.cjs
 
-# Copy models, data defaults, and source capture modules
+# Copy models, data defaults
 COPY --from=builder /app/models ./models
 COPY --from=builder /app/data/wids-config.json ./data/wids-config.json
 
-# Ensure data dir exists for runtime writes
+# Grant CAP_NET_RAW to node so packet capture works without running as root
+RUN setcap cap_net_raw,cap_net_admin=eip $(which node)
+
 RUN mkdir -p /app/data
 
 EXPOSE 3000

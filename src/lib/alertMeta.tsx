@@ -33,9 +33,9 @@ export const ALERT_TYPE_META: Record<Alert["type"], AlertTypeMeta> = {
   CHANNEL_ANOMALY: {
     label: "Channel Anomaly",
     icon: <Wifi className="w-3.5 h-3.5" />,
-    color: "text-sky-400",
-    bg: "bg-sky-500/10",
-    border: "border-sky-500/30",
+    color: "text-amber-400",
+    bg: "bg-amber-500/10",
+    border: "border-amber-500/30",
   },
   PORT_SCAN: {
     label: "Port Scan",

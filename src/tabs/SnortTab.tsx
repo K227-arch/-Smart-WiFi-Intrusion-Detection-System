@@ -36,12 +36,11 @@ export function SnortTab() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/snort-rules/file", {
+      await fetch("/api/snort-rules/file", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: fileContent }),
       });
-      const data = await res.json();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       await fetchRules();
@@ -61,7 +60,7 @@ export function SnortTab() {
   const severityColor = (priority?: number) => {
     if (priority === 1) return "text-rose-400 bg-rose-500/10 border-rose-500/30";
     if (priority === 2) return "text-amber-400 bg-amber-500/10 border-amber-500/30";
-    return "text-sky-400 bg-sky-500/10 border-sky-500/30";
+    return "text-amber-400 bg-amber-500/10 border-amber-500/30";
   };
 
   return (
@@ -77,7 +76,7 @@ export function SnortTab() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-              <Shield className="w-4 h-4 text-sky-400" /> Snort Rule Engine
+              <Shield className="w-4 h-4 text-amber-400" /> Snort Rule Engine
             </h3>
             <p className="text-[10px] text-slate-500 mt-1">
               {rules.length} rules loaded · Edit the rules file directly or use the table view
@@ -105,7 +104,7 @@ export function SnortTab() {
             <button onClick={handleSave} disabled={saving}
               className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-bold uppercase transition-all",
                 saved ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                      : "bg-sky-600 hover:bg-sky-500 text-white")}>
+                      : "bg-amber-600 hover:bg-amber-500 text-white")}>
               <Save className="w-3 h-3" />
               {saving ? "Saving..." : saved ? "Saved!" : "Save & Reload"}
             </button>
@@ -113,7 +112,7 @@ export function SnortTab() {
           <textarea
             value={fileContent}
             onChange={e => setFileContent(e.target.value)}
-            className="w-full h-96 bg-slate-950 p-4 text-[11px] font-mono text-sky-300 focus:outline-none resize-none custom-scrollbar"
+            className="w-full h-96 bg-slate-950 p-4 text-[11px] font-mono text-amber-300 focus:outline-none resize-none custom-scrollbar"
             spellCheck={false}
             placeholder="# Snort rules&#10;alert tcp any any -> any 80 (msg:&quot;HTTP&quot;; sid:1;)"
           />
@@ -153,7 +152,7 @@ export function SnortTab() {
                       <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded text-[9px] font-mono uppercase">{r.action}</span>
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <span className="px-1.5 py-0.5 bg-sky-500/10 text-sky-400 rounded text-[9px] font-mono uppercase">{r.protocol}</span>
+                      <span className="px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded text-[9px] font-mono uppercase">{r.protocol}</span>
                     </td>
                     <td className="px-4 py-3 font-mono text-[10px] text-slate-400">{r.srcIp}:{r.srcPort}</td>
                     <td className="px-4 py-3 font-mono text-[10px] text-slate-400">{r.dstIp}:{r.dstPort}</td>
@@ -186,7 +185,7 @@ export function SnortTab() {
             { title: "DNS Flood", rule: 'alert udp any any -> any 53 (msg:"DNS Flood"; threshold:type both,track by_src,count 100,seconds 10; sid:2004; rev:1;)' },
           ].map(ex => (
             <div key={ex.title} className="p-3 bg-slate-950 border border-slate-800 rounded-lg">
-              <div className="text-[9px] font-bold text-sky-400 uppercase mb-1">{ex.title}</div>
+              <div className="text-[9px] font-bold text-amber-400 uppercase mb-1">{ex.title}</div>
               <code className="text-[9px] text-slate-400 font-mono break-all leading-relaxed">{ex.rule}</code>
             </div>
           ))}

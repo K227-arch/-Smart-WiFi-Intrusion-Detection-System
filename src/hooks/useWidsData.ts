@@ -12,6 +12,8 @@ function rowToAlert(r: any): Alert {
     description: r.description,
     targetMac: r.target_mac,
     details: r.details ?? {},
+    mlScore: r.ml_score ?? undefined,
+    detectionMethod: r.detection_method ?? undefined,
   };
 }
 
@@ -23,6 +25,8 @@ function rowToDevice(r: any): Device {
     status: r.status,
     ssid: r.ssid ?? undefined,
     avgSignal: Number(r.avg_signal ?? 0),
+    ipAddress: r.ip_address ?? undefined,
+    hostname: r.hostname ?? undefined,
   };
 }
 
@@ -36,10 +40,31 @@ export function useWidsData() {
   const [engineConfig, setEngineConfig] = useState<EngineConfig | null>(null);
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [mlResults, setMlResults] = useState<MLResult[]>([]);
-  const startTime = useRef(Date.now());
+  const [isLoading, setIsLoading] = useState(true);
 
-  // ── initial data load ──────────────────────────────────────────────────────
+  // ── fetch live status from the Express server (real capture state) ─────────
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/status");
+      if (!res.ok) return;
+      const s = await res.json();
+      setStatus({
+        activeAlerts: s.activeAlerts ?? 0,
+        totalDevices: s.totalDevices ?? 0,
+        uptime: s.uptime ?? 0,
+        monitoring: s.monitoring ?? false,
+        totalPacketsProcessed: s.totalPacketsProcessed ?? 0,
+        detectionCounts: s.detectionCounts ?? {},
+        trustedDevices: s.trustedDevices ?? 0,
+        activeInterface: s.activeInterface ?? undefined,
+      });
+    } catch { /* server may not be reachable in cloud mode */ }
+  }, []);
+
+  // ── initial data load from InsForge DB ────────────────────────────────────
   const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    try {
     const [alertsRes, devicesRes, statsRes, configRes, chartRes] = await Promise.all([
       insforge.database.from("alerts").select().eq("dismissed", false).order("timestamp", { ascending: false }).limit(200),
       insforge.database.from("devices").select().order("last_seen", { ascending: false }),
@@ -105,26 +130,83 @@ export function useWidsData() {
       });
     }
 
-    // Fetch ML results from local API
-    fetch("/api/ml-results").then((r) => r.json()).then((data) => {
-      if (Array.isArray(data)) setMlResults(data);
-    }).catch(() => {});
+    // Fetch ML results from local Express API
+    fetch("/api/ml-results")
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setMlResults(data); })
+      .catch(() => {});
 
-    // Build status
-    setStatus({
-      activeAlerts: alertsRes.data?.length ?? 0,
-      totalDevices: devicesRes.data?.length ?? 0,
-      uptime: (Date.now() - startTime.current) / 1000,
-      monitoring: true,
-      totalPacketsProcessed: statsRes.data?.total_packets_processed ?? 0,
-      detectionCounts: statsRes.data?.detection_counts ?? {},
-      trustedDevices: devicesRes.data?.filter((d: any) => d.status === "trusted").length ?? 0,
-    });
-  }, []);
+    // Fetch live status (real interface name, real monitoring state)
+    fetchStatus();
 
-  // ── realtime subscriptions ─────────────────────────────────────────────────
+    // ── Local API fallback: if InsForge returned no devices/alerts,
+    // pull directly from the Express server's in-memory state ──────────────
+    if (!alertsRes.data?.length) {
+      fetch("/api/alerts")
+        .then((r) => r.json())
+        .then((data: any[]) => {
+          if (Array.isArray(data) && data.length > 0) {
+            setAlerts(data.map((a) => ({
+              id: a.id,
+              timestamp: a.timestamp,
+              type: a.type,
+              severity: a.severity,
+              description: a.description,
+              targetMac: a.targetMac ?? a.target_mac,
+              details: a.details ?? {},
+              mlScore: a.mlScore,
+              detectionMethod: a.detectionMethod,
+            })));
+          }
+        })
+        .catch(() => {});
+    }
+    if (!devicesRes.data?.length) {
+      fetch("/api/devices")
+        .then((r) => r.json())
+        .then((data: any[]) => {
+          if (Array.isArray(data) && data.length > 0) {
+            setDevices(data.map((d) => ({
+              mac: d.mac,
+              firstSeen: d.first_seen ?? d.firstSeen ?? Date.now(),
+              lastSeen: d.last_seen ?? d.lastSeen ?? Date.now(),
+              status: d.status,
+              ssid: d.ssid ?? undefined,
+              avgSignal: Number(d.avg_signal ?? d.avgSignal ?? 0),
+              ipAddress: d.ip_address ?? d.ipAddress ?? undefined,
+              hostname: d.hostname ?? undefined,
+            })));
+          }
+        })
+        .catch(() => {});
+    }
+    if (!chartRes.data?.length) {
+      fetch("/api/traffic/chart")
+        .then((r) => r.json())
+        .then((data: any[]) => {
+          if (Array.isArray(data) && data.length > 0) {
+            setChartData(data.map((b) => ({
+              time: b.time,
+              data: b.data ?? b.data_count ?? 0,
+              beacons: b.beacons ?? b.beacons_count ?? 0,
+              deauth: b.deauth ?? b.deauth_count ?? 0,
+              mgmt: b.mgmt ?? b.mgmt_count ?? 0,
+            })));
+          }
+        })
+        .catch(() => {});
+    }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fetchStatus]);
+
+  // ── realtime subscriptions + status polling ────────────────────────────────
   useEffect(() => {
     fetchData();
+
+    // Poll live status every 10s so the header stays accurate
+    const statusInterval = setInterval(fetchStatus, 10_000);
 
     let connected = false;
 
@@ -145,13 +227,15 @@ export function useWidsData() {
             description: payload.description,
             target_mac: payload.target_mac,
             details: payload.details,
+            ml_score: payload.ml_score,
+            detection_method: payload.detection_method,
           });
           setAlerts((prev) => {
             if (prev.some((a) => a.id === alert.id)) return prev;
             return [alert, ...prev].slice(0, 200);
           });
           setNewAlertCount((n) => n + 1);
-          // Refresh analytics/status counts
+          // Refresh analytics counts and status
           fetchData();
         });
 
@@ -162,7 +246,9 @@ export function useWidsData() {
             ssid: payload.ssid,
             last_seen: payload.last_seen,
             avg_signal: payload.avg_signal,
-            first_seen: payload.last_seen,
+            first_seen: payload.first_seen ?? payload.last_seen,
+            ip_address: payload.ip_address,
+            hostname: payload.hostname,
           });
           setDevices((prev) => {
             const idx = prev.findIndex((d) => d.mac === device.mac);
@@ -174,7 +260,6 @@ export function useWidsData() {
         });
       } catch (e) {
         console.warn("Realtime connection failed, falling back to polling:", e);
-        // Fallback: poll every 30s
         const interval = setInterval(fetchData, 30_000);
         return () => clearInterval(interval);
       }
@@ -183,13 +268,14 @@ export function useWidsData() {
     connectRealtime();
 
     return () => {
+      clearInterval(statusInterval);
       if (connected) {
         insforge.realtime.unsubscribe("wids:alerts");
         insforge.realtime.unsubscribe("wids:devices");
         insforge.realtime.disconnect();
       }
     };
-  }, [fetchData]);
+  }, [fetchData, fetchStatus]);
 
   // ── engine config ──────────────────────────────────────────────────────────
   const saveConfig = useCallback(async (cfg: EngineConfig) => {
@@ -207,6 +293,19 @@ export function useWidsData() {
       .select()
       .maybeSingle();
     if (data) setEngineConfig(cfg);
+
+    // Also push config update to the running Express engine
+    fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        knownNetworks: cfg.knownNetworks,
+        trustedMacs: cfg.trustedMacs,
+        deauthThreshold: cfg.deauthThreshold,
+        deauthWindowMs: cfg.deauthWindowMs,
+        dedupWindowMs: cfg.dedupWindowMs,
+      }),
+    }).catch(() => {});
   }, []);
 
   // ── device status ──────────────────────────────────────────────────────────
@@ -215,16 +314,20 @@ export function useWidsData() {
       .from("devices")
       .update({ status: newStatus, updated_at: new Date().toISOString() })
       .eq("mac", mac);
+    // Also update the running engine's trusted set
+    fetch(`/api/devices/${encodeURIComponent(mac)}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: newStatus }),
+    }).catch(() => {});
     setDevices((prev) => prev.map((d) => (d.mac === mac ? { ...d, status: newStatus } : d)));
   }, []);
 
   // ── alert management ───────────────────────────────────────────────────────
   const dismissAlert = useCallback(async (id: string) => {
-    // Mark dismissed and increment false positive count
     const alert = alerts.find((a) => a.id === id);
     await insforge.database.from("alerts").update({ dismissed: true }).eq("id", id);
     if (alert) {
-      // Increment false positive in detection_stats
       const { data: stats } = await insforge.database
         .from("detection_stats").select().eq("id", 1).maybeSingle();
       if (stats) {
@@ -253,6 +356,7 @@ export function useWidsData() {
     engineConfig,
     newAlertCount,
     mlResults,
+    isLoading,
     clearAlertBadge,
     updateDeviceStatus,
     dismissAlert,

@@ -76,12 +76,12 @@ export function NetworkTab() {
         {SUB_TABS.map(t => (
           <button key={t.id} onClick={() => setSubTab(t.id)}
             className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all",
-              subTab === t.id ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200")}>
+              subTab === t.id ? "bg-amber-600 text-white" : "text-slate-400 hover:text-slate-200")}>
             {t.icon}{t.label}
           </button>
         ))}
         <button onClick={fetchAll} disabled={loading}
-          className="ml-auto p-1.5 text-slate-500 hover:text-sky-400 transition-colors">
+          className="ml-auto p-1.5 text-slate-500 hover:text-amber-400 transition-colors">
           <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
         </button>
       </div>
@@ -104,12 +104,12 @@ export function NetworkTab() {
           {/* Capture status */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
             <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-              <Database className="w-3 h-3 text-sky-500" /> Capture Engine
+              <Database className="w-3 h-3 text-amber-500" /> Capture Engine
             </h4>
             <div className="space-y-3">
               {[
                 { label: "Mode", value: stats.isLiveCapture ? "Live (libpcap)" : "Simulator", color: stats.isLiveCapture ? "text-emerald-400" : "text-amber-400" },
-                { label: "Interface", value: stats.capture.interface, color: "text-sky-400" },
+                { label: "Interface", value: stats.capture.interface, color: "text-amber-400" },
                 { label: "Packets Received", value: stats.capture.packetsReceived.toLocaleString(), color: "text-white" },
                 { label: "Packets Analyzed", value: stats.analyzer.packetsAnalyzed.toLocaleString(), color: "text-white" },
                 { label: "Packets Dropped", value: stats.capture.packetsDropped.toLocaleString(), color: stats.capture.packetsDropped > 0 ? "text-rose-400" : "text-slate-500" },
@@ -130,7 +130,7 @@ export function NetworkTab() {
             <div className="space-y-3">
               {[
                 { label: "ARP Entries", value: stats.analyzer.arpEntries, color: "text-emerald-400" },
-                { label: "Active Flows", value: stats.analyzer.activeFlows, color: "text-sky-400" },
+                { label: "Active Flows", value: stats.analyzer.activeFlows, color: "text-amber-400" },
                 { label: "DNS Queries", value: stats.analyzer.dnsQueries, color: "text-amber-400" },
                 { label: "Network Alerts", value: stats.analyzer.alertsGenerated, color: stats.analyzer.alertsGenerated > 0 ? "text-rose-400" : "text-slate-500" },
                 { label: "Snort Rules", value: stats.snortRulesLoaded, color: "text-violet-400" },
@@ -191,7 +191,7 @@ export function NetworkTab() {
                 ) : arpTable.map(e => (
                   <tr key={e.ip} className={cn("border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors",
                     e.conflictCount > 0 && "bg-rose-500/5")}>
-                    <td className="px-5 py-3 font-mono text-sky-400">{e.ip}</td>
+                    <td className="px-5 py-3 font-mono text-amber-400">{e.ip}</td>
                     <td className="px-5 py-3 font-mono text-slate-300">{e.mac}</td>
                     <td className="px-5 py-3 text-center">
                       {e.conflictCount > 0
@@ -235,11 +235,11 @@ export function NetworkTab() {
                 ) : flows.map(f => (
                   <tr key={f.key} className={cn("border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors",
                     f.synCount > 20 && "bg-rose-500/5")}>
-                    <td className="px-4 py-2 font-mono text-sky-400 text-[10px]">{f.srcIp}:{f.srcPort}</td>
+                    <td className="px-4 py-2 font-mono text-amber-400 text-[10px]">{f.srcIp}:{f.srcPort}</td>
                     <td className="px-4 py-2 font-mono text-slate-300 text-[10px]">{f.dstIp}:{f.dstPort}</td>
                     <td className="px-4 py-2 text-center">
                       <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold uppercase",
-                        f.protocol === "tcp" ? "bg-sky-500/20 text-sky-400" : "bg-amber-500/20 text-amber-400")}>
+                        f.protocol === "tcp" ? "bg-amber-500/20 text-amber-400" : "bg-amber-500/20 text-amber-400")}>
                         {f.protocol}
                       </span>
                     </td>
@@ -291,7 +291,7 @@ export function NetworkTab() {
                     <td className="px-5 py-2 text-center">
                       <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded text-[9px] font-mono">{d.type}</span>
                     </td>
-                    <td className="px-5 py-2 font-mono text-sky-400 text-[10px]">{d.srcIp}</td>
+                    <td className="px-5 py-2 font-mono text-amber-400 text-[10px]">{d.srcIp}</td>
                     <td className="px-5 py-2 text-center">
                       {d.suspicious
                         ? <span className="flex items-center justify-center gap-1 text-amber-400 text-[9px] font-bold">

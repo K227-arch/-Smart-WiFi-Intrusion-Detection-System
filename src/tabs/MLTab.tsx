@@ -97,7 +97,7 @@ export function MLTab({ analytics, mlResults }: MLTabProps) {
                 contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", fontSize: "10px" }}
                 formatter={(v: number) => `${(v * 100).toFixed(0)}%`}
               />
-              <Bar dataKey="precision" name="Precision" fill="#0ea5e9" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="precision" name="Precision" fill="#F59E0B" radius={[2, 2, 0, 0]} />
               <Bar dataKey="recall" name="Recall" fill="#10b981" radius={[2, 2, 0, 0]} />
               <Bar dataKey="f1" name="F1-Score" fill="#a855f7" radius={[2, 2, 0, 0]} />
             </BarChart>
@@ -142,7 +142,7 @@ export function MLTab({ analytics, mlResults }: MLTabProps) {
               {THESIS_METRICS.map((row) => (
                 <tr key={row.attack} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
                   <td className="px-6 py-4 font-semibold text-slate-200">{row.attack}</td>
-                  <td className="px-6 py-4 text-center font-mono text-sky-400 font-bold">{(row.precision * 100).toFixed(0)}%</td>
+                  <td className="px-6 py-4 text-center font-mono text-amber-400 font-bold">{(row.precision * 100).toFixed(0)}%</td>
                   <td className="px-6 py-4 text-center font-mono text-emerald-400 font-bold">{(row.recall * 100).toFixed(0)}%</td>
                   <td className="px-6 py-4 text-center font-mono text-violet-400 font-bold">{(row.f1 * 100).toFixed(0)}%</td>
                   <td className="px-6 py-4 w-32">
@@ -197,7 +197,7 @@ export function MLTab({ analytics, mlResults }: MLTabProps) {
               ) : (
                 mlResults.slice(0, 20).map((r) => (
                   <tr key={r.mac} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
-                    <td className="px-6 py-3 font-mono text-sky-400 text-[10px]">{r.mac}</td>
+                    <td className="px-6 py-3 font-mono text-amber-400 text-[10px]">{r.mac}</td>
                     <td className="px-6 py-3 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <div className="w-16 bg-slate-800 h-1.5 rounded-full overflow-hidden">
@@ -229,11 +229,11 @@ export function MLTab({ analytics, mlResults }: MLTabProps) {
       {/* Snort rules info */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shrink-0">
         <h4 className="text-sm font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-2">
-          <Brain className="w-4 h-4 text-sky-400" /> Active Detection Methods
+          <Brain className="w-4 h-4 text-amber-400" /> Active Detection Methods
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {[
-            { method: "Signature-Based", desc: "Snort-style rules matching known attack patterns (Rogue AP, Deauth, MAC Spoof, Port Scan, Brute Force)", status: "active", color: "text-sky-400 border-sky-500/30 bg-sky-500/5" },
+            { method: "Signature-Based", desc: "Snort-style rules matching known attack patterns (Rogue AP, Deauth, MAC Spoof, Port Scan, Brute Force)", status: "active", color: "text-amber-400 border-amber-500/30 bg-amber-500/5" },
             { method: "Anomaly-Based", desc: "Rolling baseline of normal traffic. Flags deviations in packet rate, deauth ratio, and channel hopping", status: "active", color: "text-emerald-400 border-emerald-500/30 bg-emerald-500/5" },
             { method: "ML Scoring", desc: "Naive Bayes-style feature scoring per device. Combines packet rate, signal, deauth ratio, and beacon ratio into a 0–1 threat score", status: "active", color: "text-violet-400 border-violet-500/30 bg-violet-500/5" },
           ].map((m) => (

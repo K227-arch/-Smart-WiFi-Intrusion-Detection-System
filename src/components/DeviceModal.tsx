@@ -12,14 +12,14 @@ interface DeviceModalProps {
 }
 
 export function DeviceModal({ device, onClose, onUpdateStatus }: DeviceModalProps) {
-  if (!device) return null;
-
   const handleTrustToggle = () => {
+    if (!device) return;
     const next = device.status === "trusted" ? "unknown" : "trusted";
     onUpdateStatus(device.mac, next);
   };
 
   const handleBlockToggle = () => {
+    if (!device) return;
     const next = device.status === "blocked" ? "unknown" : "blocked";
     onUpdateStatus(device.mac, next);
   };
@@ -44,7 +44,7 @@ export function DeviceModal({ device, onClose, onUpdateStatus }: DeviceModalProp
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
               <h3 className="text-white font-bold uppercase tracking-widest flex items-center gap-2">
-                <Shield className="w-4 h-4 text-sky-500" /> Identity Inspector
+                <Shield className="w-4 h-4 text-amber-500" /> Identity Inspector
               </h3>
               <button
                 onClick={onClose}
@@ -59,12 +59,17 @@ export function DeviceModal({ device, onClose, onUpdateStatus }: DeviceModalProp
             <div className="p-6 space-y-6">
               {/* Device identity badge */}
               <div className="flex flex-col items-center justify-center py-4 bg-slate-950/50 rounded-xl border border-slate-800/50">
-                <div className="w-16 h-16 bg-sky-500/10 rounded-full flex items-center justify-center mb-4 ring-1 ring-sky-500/20">
-                  <Wifi className="w-8 h-8 text-sky-500" />
+                <div className="w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center mb-4 ring-1 ring-amber-500/20">
+                  <Wifi className="w-8 h-8 text-amber-500" />
                 </div>
-                <div className="text-xl font-mono font-bold text-white tracking-widest">
-                  {device.mac}
+                {/* Primary: IP address */}
+                <div className="text-2xl font-mono font-bold text-amber-400 tracking-widest">
+                  {device.ipAddress ?? "IP Unknown"}
                 </div>
+                {/* Hostname */}
+                {device.hostname && (
+                  <div className="text-sm text-slate-300 font-medium mt-1">{device.hostname}</div>
+                )}
                 <div
                   className={cn(
                     "mt-2 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
@@ -81,6 +86,21 @@ export function DeviceModal({ device, onClose, onUpdateStatus }: DeviceModalProp
 
               {/* Details grid */}
               <div className="grid grid-cols-2 gap-4">
+                <DetailItem
+                  label="MAC Address"
+                  value={device.mac}
+                  color="text-slate-400"
+                />
+                <DetailItem
+                  label="IP Address"
+                  value={device.ipAddress ?? "Not resolved"}
+                  color={device.ipAddress ? "text-amber-400" : "text-slate-500"}
+                />
+                <DetailItem
+                  label="Hostname"
+                  value={device.hostname ?? "Not resolved"}
+                  color={device.hostname ? "text-emerald-400" : "text-slate-500"}
+                />
                 <DetailItem
                   label="Primary SSID"
                   value={device.ssid || "Hidden/Broadcast Proxy"}
@@ -112,7 +132,7 @@ export function DeviceModal({ device, onClose, onUpdateStatus }: DeviceModalProp
                       "flex-1 py-2 rounded-lg font-bold text-xs uppercase tracking-wider transition-all",
                       device.status === "trusted"
                         ? "bg-slate-800 text-slate-400"
-                        : "bg-sky-500 text-white shadow-lg shadow-sky-500/20"
+                        : "bg-amber-500 text-white shadow-lg shadow-amber-500/20"
                     )}
                   >
                     {device.status === "trusted" ? "Revoke Trust" : "Trust Device"}
