@@ -78,9 +78,12 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     setError(null);
     setLoading(true);
     try {
+      // redirectTo must be the exact URL InsForge will redirect back to after OAuth.
+      // Using window.location.href captures the current page (including any path),
+      // so the callback always lands back on the login page on Vercel.
       await insforge.auth.signInWithOAuth({
         provider,
-        redirectTo: window.location.origin,
+        redirectTo: window.location.href.split("?")[0], // strip any stale query params
       });
       // SDK auto-redirects to provider — loading stays true during redirect
     } catch (err: any) {

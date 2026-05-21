@@ -36,24 +36,51 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    // Check for OAuth callback — InsForge puts insforge_code in the URL after redirect
     const params = new URLSearchParams(window.location.search);
+    // InsForge appends insforge_code after OAuth redirect; some providers use "code"
     const hasOAuthCode = params.has("insforge_code") || params.has("code");
 
-    insforge.auth.getCurrentUser().then(({ data }) => {
-      setIsAuthenticated(!!data?.user);
-      setAuthChecked(true);
-      // Clean up OAuth params from URL without triggering a reload
-      if (hasOAuthCode) {
-        window.history.replaceState({}, document.title, window.location.pathname);
+    // Clean up OAuth params from URL immediately so a page refresh doesn't
+    // re-trigger the exchange with a stale/already-used code.
+    if (hasOAuthCode) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // The SDK automatically exchanges insforge_code for a session inside
+    // getCurrentUser(). We retry once after a short delay when an OAuth code
+    // was present, because the exchange is async and the first call may return
+    // no user while the token is still being processed.
+    const checkAuth = async () => {
+      const { data } = await insforge.auth.getCurrentUser();
+      if (data?.user) {
+        setIsAuthenticated(true);
+        setAuthChecked(true);
+        return;
       }
-    });
+
+      // If we came back from an OAuth redirect and the first check returned
+      // nothing, wait briefly and retry — the SDK may still be exchanging the code.
+      if (hasOAuthCode) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const { data: retryData } = await insforge.auth.getCurrentUser();
+        setIsAuthenticated(!!retryData?.user);
+      }
+
+      setAuthChecked(true);
+    };
+
+    checkAuth();
   }, []);
 
   if (!authChecked) {
     return (
       <div className="h-screen w-full bg-slate-950 flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-[10px] text-amber-400 font-mono uppercase tracking-widest">
+            Authenticating…
+          </span>
+        </div>
       </div>
     );
   }
