@@ -10,6 +10,7 @@ import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
 import { useSession } from "./hooks/useSession";
+import { useTheme } from "./hooks/useTheme";
 import { formatUptime, formatNumber, cn } from "./lib/utils";
 
 import { Header } from "./components/Header";
@@ -224,6 +225,9 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
     avatarUrl: currentUser?.avatar_url,
   });
 
+  // ── Theme ─────────────────────────────────────────────────────────────────
+  const { theme, toggleTheme } = useTheme();
+
   const [selectedTab, setSelectedTab] = useState<TabId>("dashboard");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
@@ -280,6 +284,8 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
         user={currentUser}
         onSignOut={handleSignOut}
         activeUsers={activeUsers}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
       <main className="flex-1 flex flex-col lg:grid lg:grid-cols-12 gap-0 overflow-hidden relative">

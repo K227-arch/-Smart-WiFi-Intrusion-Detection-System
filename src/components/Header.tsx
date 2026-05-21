@@ -1,10 +1,11 @@
-import { BrainCircuit, LogOut, Menu, RefreshCw, ShieldAlert, User, Users, X } from "lucide-react";
+import { BrainCircuit, LogOut, Menu, Moon, RefreshCw, ShieldAlert, Sun, User, Users, X } from "lucide-react";
 import { memo, useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import type { SystemStatus } from "../types";
 import { SalamandaLogo } from "./SalamandaLogo";
 import type { ActiveUser } from "../hooks/useSession";
+import type { Theme } from "../hooks/useTheme";
 
 interface HeaderProps {
   status: SystemStatus | null;
@@ -17,6 +18,8 @@ interface HeaderProps {
   user?: { email: string; name?: string; avatar_url?: string } | null;
   onSignOut?: () => void;
   activeUsers?: ActiveUser[];
+  theme?: Theme;
+  onToggleTheme?: () => void;
 }
 
 export const Header = memo(function Header({
@@ -30,6 +33,8 @@ export const Header = memo(function Header({
   user,
   onSignOut,
   activeUsers = [],
+  theme = "dark",
+  onToggleTheme,
 }: HeaderProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -123,6 +128,19 @@ export const Header = memo(function Header({
           className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-slate-400 hover:text-white transition-colors"
         >
           <RefreshCw className="w-3.5 h-3.5" />
+        </button>
+
+        {/* ── Light / Dark mode toggle ── */}
+        <button
+          onClick={onToggleTheme}
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-slate-400 hover:text-amber-400 transition-colors"
+        >
+          {theme === "dark" ? (
+            <Sun className="w-3.5 h-3.5" />
+          ) : (
+            <Moon className="w-3.5 h-3.5" />
+          )}
         </button>
 
         {/* ── Active users on this network ── */}
