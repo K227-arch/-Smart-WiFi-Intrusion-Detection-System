@@ -37,33 +37,23 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    // InsForge appends insforge_code after OAuth redirect; some providers use "code"
+    // InsForge appends insforge_code after OAuth redirect
     const hasOAuthCode = params.has("insforge_code") || params.has("code");
 
-    // Clean up OAuth params from URL immediately so a page refresh doesn't
-    // re-trigger the exchange with a stale/already-used code.
-    if (hasOAuthCode) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    // The SDK automatically exchanges insforge_code for a session inside
-    // getCurrentUser(). We retry once after a short delay when an OAuth code
-    // was present, because the exchange is async and the first call may return
-    // no user while the token is still being processed.
     const checkAuth = async () => {
+      // Call getCurrentUser() FIRST — the SDK reads insforge_code from the URL
+      // internally and exchanges it for a session before returning.
       const { data } = await insforge.auth.getCurrentUser();
+
+      // Only clean up the URL AFTER the SDK has had a chance to read the code.
+      if (hasOAuthCode) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
       if (data?.user) {
         setIsAuthenticated(true);
         setAuthChecked(true);
         return;
-      }
-
-      // If we came back from an OAuth redirect and the first check returned
-      // nothing, wait briefly and retry — the SDK may still be exchanging the code.
-      if (hasOAuthCode) {
-        await new Promise((r) => setTimeout(r, 1200));
-        const { data: retryData } = await insforge.auth.getCurrentUser();
-        setIsAuthenticated(!!retryData?.user);
       }
 
       setAuthChecked(true);
