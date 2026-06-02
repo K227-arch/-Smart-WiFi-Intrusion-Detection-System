@@ -297,13 +297,15 @@ export function LiveTrafficTab() {
 
       {/* ── Packet table ── */}
       <div className="flex-1 overflow-x-auto overflow-y-auto custom-scrollbar">
-        <table className="w-full text-left min-w-[800px]">
+        <table className="w-full text-left min-w-[1000px]">
           <thead className="text-[10px] text-slate-500 uppercase border-b border-slate-800 sticky top-0 bg-slate-900 z-10">
             <tr>
               <th className="px-6 py-3 font-semibold">Time</th>
               <th className="px-6 py-3 font-semibold">Source MAC</th>
               <th className="px-6 py-3 font-semibold">Destination MAC</th>
               <th className="px-6 py-3 font-semibold text-center">Type</th>
+              <th className="px-6 py-3 font-semibold">Src Port</th>
+              <th className="px-6 py-3 font-semibold">Dst Port</th>
               <th className="px-6 py-3 font-semibold">Signal</th>
               <th className="px-6 py-3 font-semibold text-right">Details</th>
             </tr>
@@ -340,6 +342,29 @@ export function LiveTrafficTab() {
                           {p.type}
                         </span>
                       </td>
+                      {/* Src Port */}
+                      <td className="px-6 py-3">
+                        {p.srcPort != null ? (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] font-mono text-amber-300">
+                            {p.srcPort}
+                          </span>
+                        ) : <span className="text-slate-700">—</span>}
+                      </td>
+                      {/* Dst Port */}
+                      <td className="px-6 py-3">
+                        {p.dstPort != null ? (
+                          <span className={cn(
+                            "px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold",
+                            p.dstPort === 22 ? "bg-rose-500/20 text-rose-400 border-rose-500/30" :
+                            p.dstPort === 80 || p.dstPort === 443 ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" :
+                            p.dstPort === 3389 ? "bg-rose-500/20 text-rose-400 border-rose-500/30" :
+                            p.dstPort === 53 ? "bg-amber-500/20 text-amber-400 border-amber-500/30" :
+                            "bg-slate-800 text-slate-300 border-slate-700"
+                          )}>
+                            {p.dstPort}
+                          </span>
+                        ) : <span className="text-slate-700">—</span>}
+                      </td>
                       <td className={cn("px-6 py-3 font-bold", p.signalStrength > -60 ? "text-emerald-500" : "text-slate-500")}>
                         {p.signalStrength.toFixed(0)}
                       </td>
@@ -357,7 +382,7 @@ export function LiveTrafficTab() {
                           exit={{ height: 0, opacity: 0 }}
                           className="bg-slate-950/50 overflow-hidden"
                         >
-                          <td colSpan={6} className="px-6 py-4 border-b border-amber-500/20">
+                          <td colSpan={8} className="px-6 py-4 border-b border-amber-500/20">
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
                               <div className="space-y-1">
                                 <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">BSSID</div>
@@ -375,6 +400,36 @@ export function LiveTrafficTab() {
                                 <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Packet Class</div>
                                 <div className="text-xs text-slate-400 font-mono uppercase">{p.type} Frame</div>
                               </div>
+                              {(p.srcIp || p.dstIp) && (
+                                <>
+                                  <div className="space-y-1">
+                                    <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Src IP</div>
+                                    <div className="text-xs text-amber-300 font-mono">{p.srcIp ?? "—"}</div>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Dst IP</div>
+                                    <div className="text-xs text-slate-300 font-mono">{p.dstIp ?? "—"}</div>
+                                  </div>
+                                </>
+                              )}
+                              {(p.srcPort != null || p.dstPort != null) && (
+                                <>
+                                  <div className="space-y-1">
+                                    <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Src Port</div>
+                                    <div className="text-xs text-amber-300 font-mono">{p.srcPort ?? "—"}</div>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Dst Port</div>
+                                    <div className="text-xs text-slate-300 font-mono">{p.dstPort ?? "—"}</div>
+                                  </div>
+                                </>
+                              )}
+                              {p.protocol && (
+                                <div className="space-y-1">
+                                  <div className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Protocol</div>
+                                  <div className="text-xs text-violet-400 font-mono uppercase">{p.protocol}</div>
+                                </div>
+                              )}
                             </div>
                           </td>
                         </motion.tr>

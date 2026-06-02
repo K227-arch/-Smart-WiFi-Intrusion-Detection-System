@@ -15,7 +15,14 @@ export default defineConfig(() => {
       port: 3000,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {
-        ignored: ['**/data/**'],
+        ignored: [
+          '**/data/**',
+          '**/.vscode/**',
+          '**/node_modules/**',
+          '**/*.json',          // data files, lock files etc
+          '**/models/**',       // ONNX binaries
+          '**/.git/**',
+        ],
       },
     },
   };

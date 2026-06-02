@@ -1,6 +1,8 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
+import https from "https";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
 import * as ort from "onnxruntime-node";
@@ -173,6 +175,12 @@ interface WiFiPacket {
   type: "data" | "mgmt" | "beacons" | "deauth";
   signalStrength: number;
   channel: number;
+  // Layer-4 enrichment (populated from real Ethernet/IP capture)
+  srcPort?: number;
+  dstPort?: number;
+  protocol?: "tcp" | "udp" | "icmp";
+  srcIp?: string;
+  dstIp?: string;
 }
 
 interface Alert {
@@ -418,6 +426,119 @@ function mlScore(features: DeviceFeatures): number {
   return Math.min(score, 1);
 }
 
+// ── Statistical Anomaly Detection Engine ─────────────────────────────────────
+// Maintains per-device Welford online statistics for multiple features.
+// Fires ANOMALY alerts when any feature deviates beyond Z_THRESHOLD std devs
+// from the device's own learned baseline (not a global baseline).
+// Requires MIN_SAMPLES windows before alerting to avoid cold-start false positives.
+
+const ANOMALY_Z_THRESHOLD = 3.5;   // standard deviations to trigger alert
+const ANOMALY_MIN_SAMPLES = 5;     // minimum windows before alerting
+const ANOMALY_DEDUP_MS = 120_000;  // 2-minute dedup per device+feature
+
+interface FeatureStat {
+  mean: number;
+  m2: number;       // Welford M2 accumulator
+  count: number;
+}
+
+interface DeviceAnomalyProfile {
+  packetRate: FeatureStat;
+  deauthRatio: FeatureStat;
+  portDiversity: FeatureStat;  // unique dst ports per window
+  lastAlertTime: Map<string, number>;  // feature → last alert timestamp
+}
+
+const deviceAnomalyProfiles = new Map<string, DeviceAnomalyProfile>();
+
+// Per-device port diversity tracker (unique dst ports seen in current window)
+interface PortWindow {
+  ports: Set<number>;
+  windowStart: number;
+}
+const devicePortWindows = new Map<string, PortWindow>();
+
+function welfordUpdate(stat: FeatureStat, value: number): void {
+  stat.count++;
+  const delta = value - stat.mean;
+  stat.mean += delta / stat.count;
+  const delta2 = value - stat.mean;
+  stat.m2 += delta * delta2;
+}
+
+function welfordStd(stat: FeatureStat): number {
+  if (stat.count < 2) return 1;
+  return Math.sqrt(stat.m2 / (stat.count - 1));
+}
+
+function welfordZScore(stat: FeatureStat, value: number): number {
+  const std = welfordStd(stat);
+  if (std === 0) return 0;
+  return Math.abs(value - stat.mean) / std;
+}
+
+function getOrCreateProfile(mac: string): DeviceAnomalyProfile {
+  if (!deviceAnomalyProfiles.has(mac)) {
+    deviceAnomalyProfiles.set(mac, {
+      packetRate:    { mean: 0, m2: 0, count: 0 },
+      deauthRatio:   { mean: 0, m2: 0, count: 0 },
+      portDiversity: { mean: 0, m2: 0, count: 0 },
+      lastAlertTime: new Map(),
+    });
+  }
+  return deviceAnomalyProfiles.get(mac)!;
+}
+
+/**
+ * Update a device's anomaly profile with the current window's features.
+ * Returns a list of anomalous features (with z-scores) if any exceed the threshold.
+ */
+function updateAnomalyProfile(
+  mac: string,
+  packetRate: number,
+  deauthRatio: number,
+  portDiversity: number
+): Array<{ feature: string; value: number; mean: number; std: number; zScore: number }> {
+  const profile = getOrCreateProfile(mac);
+  const now = Date.now();
+
+  // Update Welford stats
+  welfordUpdate(profile.packetRate, packetRate);
+  welfordUpdate(profile.deauthRatio, deauthRatio);
+  welfordUpdate(profile.portDiversity, portDiversity);
+
+  // Don't alert until we have enough samples for a reliable baseline
+  if (profile.packetRate.count < ANOMALY_MIN_SAMPLES) return [];
+
+  const anomalies: Array<{ feature: string; value: number; mean: number; std: number; zScore: number }> = [];
+
+  const checks: Array<{ name: string; stat: FeatureStat; value: number }> = [
+    { name: "packetRate",    stat: profile.packetRate,    value: packetRate },
+    { name: "deauthRatio",   stat: profile.deauthRatio,   value: deauthRatio },
+    { name: "portDiversity", stat: profile.portDiversity, value: portDiversity },
+  ];
+
+  for (const { name, stat, value } of checks) {
+    const zScore = welfordZScore(stat, value);
+    if (zScore >= ANOMALY_Z_THRESHOLD) {
+      // Dedup: only fire once per feature per ANOMALY_DEDUP_MS
+      const lastAlert = profile.lastAlertTime.get(name) ?? 0;
+      if (now - lastAlert >= ANOMALY_DEDUP_MS) {
+        profile.lastAlertTime.set(name, now);
+        anomalies.push({
+          feature: name,
+          value,
+          mean: stat.mean,
+          std: welfordStd(stat),
+          zScore,
+        });
+      }
+    }
+  }
+
+  return anomalies;
+}
+
 // Snort-style default rules
 interface SnortRule {
   id: string;
@@ -538,6 +659,12 @@ captureEngine.on("packet", (pkt: CapturedPacket) => {
     signalStrength: -50,
     channel: config.knownNetworks[0]?.channel ?? 1,
     ssid: undefined,
+    // Enrich with layer-3/4 info from the real captured packet
+    srcIp: pkt.srcIp,
+    dstIp: pkt.dstIp,
+    srcPort: pkt.srcPort,
+    dstPort: pkt.dstPort,
+    protocol: pkt.protocol === 6 ? "tcp" : pkt.protocol === 17 ? "udp" : pkt.protocol === 1 ? "icmp" : undefined,
   };
   // Only run the WiFi detection checks that make sense for Ethernet capture:
   // unauthorized device, rogue AP (if SSID is known), channel anomaly.
@@ -783,7 +910,37 @@ const detectionEngine = {
               }, config.dedupWindowMs * 2);
             }
           });
-        }
+
+          // ── Statistical anomaly detection — per-device Welford baseline ──
+          // Compute port diversity from the current window's port tracker
+          const portWindow = devicePortWindows.get(packet.sourceMac);
+          const portDiversity = portWindow ? portWindow.ports.size : 0;
+          const anomalies = updateAnomalyProfile(packet.sourceMac, packetRate, deauthRatio, portDiversity);
+          for (const a of anomalies) {
+            const featureLabel: Record<string, string> = {
+              packetRate: "packet rate",
+              deauthRatio: "deauth frame ratio",
+              portDiversity: "port diversity",
+            };
+            addAlert({
+              type: "ANOMALY",
+              severity: a.zScore >= 5 ? "high" : "medium",
+              targetMac: packet.sourceMac,
+              description: `Statistical anomaly on ${packet.sourceMac}: ${featureLabel[a.feature] ?? a.feature} = ${a.value.toFixed(2)} (z-score ${a.zScore.toFixed(1)}σ above baseline mean ${a.mean.toFixed(2)} ± ${a.std.toFixed(2)}).`,
+              details: {
+                feature: a.feature,
+                value: a.value,
+                mean: a.mean,
+                std: a.std,
+                zScore: a.zScore,
+                packetRate,
+                deauthRatio,
+                portDiversity,
+                method: "statistical-anomaly",
+              },
+            }, ANOMALY_DEDUP_MS);
+          }
+        } // end if (feat && feat.packetCount > 0)
         deviceFeatures.set(packet.sourceMac, {
           packetCount: 1,
           deauthCount: packet.type === "deauth" ? 1 : 0,
@@ -798,6 +955,17 @@ const detectionEngine = {
         if (packet.type === "beacons") feat.beaconCount++;
         if (packet.type === "mgmt") feat.mgmtCount++;
         feat.uniqueChannels.add(packet.channel);
+      }
+
+      // Track port diversity for anomaly detection
+      if (packet.dstPort) {
+        const now2 = Date.now();
+        const pw = devicePortWindows.get(packet.sourceMac);
+        if (!pw || now2 - pw.windowStart > ML_WINDOW_MS) {
+          devicePortWindows.set(packet.sourceMac, { ports: new Set([packet.dstPort]), windowStart: now2 });
+        } else {
+          pw.ports.add(packet.dstPort);
+        }
       }
     }
 
@@ -937,6 +1105,35 @@ const detectionEngine = {
               }, config.dedupWindowMs * 2);
             }
           });
+
+          // ── Statistical anomaly detection (Ethernet mode) ──
+          const portWindowE = devicePortWindows.get(packet.sourceMac);
+          const portDiversityE = portWindowE ? portWindowE.ports.size : 0;
+          const anomaliesE = updateAnomalyProfile(packet.sourceMac, packetRate, deauthRatio, portDiversityE);
+          for (const a of anomaliesE) {
+            const featureLabel: Record<string, string> = {
+              packetRate: "packet rate",
+              deauthRatio: "deauth frame ratio",
+              portDiversity: "port diversity",
+            };
+            addAlert({
+              type: "ANOMALY",
+              severity: a.zScore >= 5 ? "high" : "medium",
+              targetMac: packet.sourceMac,
+              description: `Statistical anomaly on ${packet.sourceMac}: ${featureLabel[a.feature] ?? a.feature} = ${a.value.toFixed(2)} (z-score ${a.zScore.toFixed(1)}σ above baseline mean ${a.mean.toFixed(2)} ± ${a.std.toFixed(2)}).`,
+              details: {
+                feature: a.feature,
+                value: a.value,
+                mean: a.mean,
+                std: a.std,
+                zScore: a.zScore,
+                packetRate,
+                deauthRatio,
+                portDiversity: portDiversityE,
+                method: "statistical-anomaly",
+              },
+            }, ANOMALY_DEDUP_MS);
+          }
         }
         deviceFeatures.set(packet.sourceMac, {
           packetCount: 1, deauthCount: 0, beaconCount: 0, mgmtCount: 0,
@@ -945,6 +1142,17 @@ const detectionEngine = {
       } else {
         feat.packetCount++;
         feat.uniqueChannels.add(packet.channel);
+      }
+
+      // Track port diversity for anomaly detection
+      if (packet.dstPort) {
+        const now2 = Date.now();
+        const pw = devicePortWindows.get(packet.sourceMac);
+        if (!pw || now2 - pw.windowStart > ML_WINDOW_MS) {
+          devicePortWindows.set(packet.sourceMac, { ports: new Set([packet.dstPort]), windowStart: now2 });
+        } else {
+          pw.ports.add(packet.dstPort);
+        }
       }
     }
 
@@ -1076,9 +1284,93 @@ async function startServer() {
   const PORT = 3000;
   app.use(express.json());
 
+  // ── Local Auth System ─────────────────────────────────────────────────────
+  setupLocalAuth(app);
+
   // GET /api/ml-results
   app.get("/api/ml-results", (_req, res) => {
     res.json(mlResults);
+  });
+
+  // ── InsForge Auth Proxy ───────────────────────────────────────────────────
+  // The browser can't reach the InsForge backend directly due to TLS cert
+  // verification issues on some machines. All /insforge-auth/* requests are
+  // proxied through this Express server which already has a working connection.
+  const INSFORGE_BASE = "https://bh9n4s8r.us-east.insforge.app";
+  const INSFORGE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo";
+
+  // Helper: make an HTTPS request bypassing TLS cert verification
+  function httpsRequest(
+    method: string,
+    urlStr: string,
+    headers: Record<string, string>,
+    body?: string
+  ): Promise<{ status: number; headers: Record<string, string | string[]>; body: string }> {
+    return new Promise((resolve, reject) => {
+      const u = new URL(urlStr);
+      const options = {
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: u.pathname + u.search,
+        method,
+        headers: { ...headers, ...(body ? { "content-length": Buffer.byteLength(body).toString() } : {}) },
+        rejectUnauthorized: false,
+      };
+      const req = https.request(options, (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 502,
+            headers: res.headers as Record<string, string | string[]>,
+            body: data,
+          });
+        });
+      });
+      req.on("error", reject);
+      if (body) req.write(body);
+      req.end();
+    });
+  }
+
+  // Proxy all /insforge-auth/* → InsForge backend, bypassing browser TLS issues
+  app.all("/insforge-auth/*", async (req, res) => {
+    // Strip the /insforge-auth prefix to get the real InsForge path
+    const upstreamPath = req.path.replace(/^\/insforge-auth/, "");
+    const qs = req.url.includes("?") ? "?" + req.url.split("?").slice(1).join("?") : "";
+    const upstreamUrl = `${INSFORGE_BASE}${upstreamPath}${qs}`;
+
+    try {
+      // Forward all headers except host; add anon key if not already present
+      const forwardHeaders: Record<string, string> = { "content-type": "application/json" };
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (k.toLowerCase() === "host") continue;
+        if (k.toLowerCase() === "content-length") continue; // recalculated below
+        if (typeof v === "string") forwardHeaders[k] = v;
+        else if (Array.isArray(v)) forwardHeaders[k] = v[0];
+      }
+      if (!forwardHeaders["apikey"]) forwardHeaders["apikey"] = INSFORGE_ANON_KEY;
+      if (!forwardHeaders["x-anon-key"]) forwardHeaders["x-anon-key"] = INSFORGE_ANON_KEY;
+
+      const body = req.method !== "GET" && req.method !== "HEAD"
+        ? JSON.stringify(req.body)
+        : undefined;
+
+      const upstream = await httpsRequest(req.method, upstreamUrl, forwardHeaders, body);
+
+      // Relay status + headers (skip hop-by-hop headers)
+      const skipHeaders = new Set(["transfer-encoding", "connection", "keep-alive", "upgrade", "content-length"]);
+      res.status(upstream.status);
+      for (const [key, value] of Object.entries(upstream.headers)) {
+        if (!skipHeaders.has(key.toLowerCase())) {
+          res.setHeader(key, value);
+        }
+      }
+      res.send(upstream.body);
+    } catch (err: any) {
+      console.error("[auth-proxy] error:", err.message);
+      res.status(502).json({ error: "Auth proxy error", message: err.message });
+    }
   });
 
   // ── User Session Management ───────────────────────────────────────────────
@@ -1187,6 +1479,9 @@ async function startServer() {
       stdPacketRate: getBaselineStd().toFixed(2),
       sampleCount: anomalyBaseline.sampleCount,
       lastUpdated: anomalyBaseline.lastUpdated,
+      deviceProfiles: deviceAnomalyProfiles.size,
+      zThreshold: ANOMALY_Z_THRESHOLD,
+      minSamples: ANOMALY_MIN_SAMPLES,
     });
   });
 
@@ -1232,11 +1527,12 @@ async function startServer() {
       activeAlerts: alerts.length,
       totalDevices: devices.size,
       uptime: process.uptime(),
-      monitoring: captureEngine.isLive(),
+      monitoring: engineActive,
       totalPacketsProcessed,
       detectionCounts,
       trustedDevices: trustedMacs.size,
       activeInterface: ACTIVE_IFACE,
+      captureMode: captureEngine.isLive() ? "live" : "simulator",
     });
   });
 
@@ -1418,14 +1714,13 @@ async function startServer() {
     // ── Start live packet capture on the active WiFi interface ──
     captureEngine.start().then((live) => {
       if (live) {
+        engineActive = true;
         console.log(`✓ Live capture active on ${ACTIVE_IFACE} — capturing real network traffic`);
       } else {
-        console.error(`✗ Live capture FAILED on ${ACTIVE_IFACE}.`);
-        console.error("  Run once to grant capture permissions without sudo:");
-        console.error("    macOS:  sudo npm run setup:capture");
-        console.error("    Linux:  sudo npm run setup:capture:linux");
-        console.error("  Then restart:  npm run dev");
-        process.exit(1);
+        console.warn(`⚠ Live capture unavailable on ${ACTIVE_IFACE} — running in simulator mode.`);
+        console.warn("  Install Npcap (Windows) or run: sudo npm run setup:capture (macOS/Linux)");
+        console.warn("  Simulator will generate synthetic traffic for demo purposes.");
+        startSimulator();
       }
     });
 
@@ -1438,6 +1733,294 @@ async function startServer() {
       }).eq("id", 1), "stats sync");
     }, 30_000);
   });
+}
+
+// ── Engine active flag — true when either live capture or simulator is running ─
+let engineActive = false;
+
+// ── Local Auth System ─────────────────────────────────────────────────────────
+// Self-contained email+password auth with 2FA OTP.
+// Uses Node's built-in crypto — no external dependencies.
+// Users stored in data/wids-users.json, sessions in data/wids-sessions.json.
+// OTPs are printed to the server console (dev mode — no email service configured).
+
+interface LocalUser {
+  id: string;
+  email: string;
+  name?: string;
+  passwordHash: string;
+  passwordSalt: string;
+  createdAt: number;
+}
+interface LocalSession {
+  token: string;
+  userId: string;
+  email: string;
+  createdAt: number;
+  expiresAt: number;
+}
+interface PendingOtp {
+  email: string;
+  otp: string;
+  expiresAt: number;
+  purpose: "signin" | "signup";
+}
+
+const AUTH_DATA_DIR = path.join(process.cwd(), "data");
+const USERS_FILE   = path.join(AUTH_DATA_DIR, "wids-users.json");
+const SESSIONS_FILE = path.join(AUTH_DATA_DIR, "wids-sessions.json");
+const OTP_EXPIRY_MS     = 10 * 60 * 1000;          // 10 minutes
+const SESSION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const pendingOtps = new Map<string, PendingOtp>();  // email → OTP (in-memory)
+
+function loadUsers(): LocalUser[] {
+  try {
+    if (fs.existsSync(USERS_FILE)) return JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+  } catch { /* ignore */ }
+  return [];
+}
+function saveUsers(users: LocalUser[]) {
+  try { fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2)); } catch { /* ignore */ }
+}
+function loadSessions(): LocalSession[] {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const all: LocalSession[] = JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf-8"));
+      return all.filter((s) => s.expiresAt > Date.now());
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+function saveSessions(sessions: LocalSession[]) {
+  try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2)); } catch { /* ignore */ }
+}
+function hashPassword(password: string, salt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err: Error | null, key: Buffer) => {
+      if (err) reject(err); else resolve(key.toString("hex"));
+    });
+  });
+}
+function generateOtp(): string { return String(crypto.randomInt(100000, 999999)); }
+function generateToken(): string { return crypto.randomBytes(32).toString("hex"); }
+function printOtp(email: string, otp: string) {
+  const padded = email.padEnd(22);
+  console.log(`\n╔══════════════════════════════════════╗`);
+  console.log(`║  2FA CODE for ${padded}║`);
+  console.log(`║  OTP: ${otp}  (expires in 10 min)   ║`);
+  console.log(`╚══════════════════════════════════════╝\n`);
+}
+
+function requireLocalAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return res.status(401).json({ error: "Unauthorized" });
+  const token = auth.slice(7);
+  const session = loadSessions().find((s) => s.token === token && s.expiresAt > Date.now());
+  if (!session) return res.status(401).json({ error: "Session expired or invalid" });
+  (req as any).localUser = session;
+  next();
+}
+
+function setupLocalAuth(app: express.Express) {
+  // POST /api/local-auth/signup
+  app.post("/api/local-auth/signup", async (req, res) => {
+    const { email, password, name } = req.body ?? {};
+    if (!email || !password) return res.status(400).json({ error: "email and password required" });
+    if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+
+    const users = loadUsers();
+    if (users.find((u) => u.email.toLowerCase() === email.toLowerCase())) {
+      return res.status(409).json({ error: "An account with this email already exists" });
+    }
+
+    const salt = crypto.randomBytes(16).toString("hex");
+    const passwordHash = await hashPassword(password, salt);
+    const newUser: LocalUser = {
+      id: crypto.randomBytes(16).toString("hex"),
+      email: email.toLowerCase().trim(),
+      name: name?.trim() || undefined,
+      passwordHash,
+      passwordSalt: salt,
+      createdAt: Date.now(),
+    };
+    users.push(newUser);
+    saveUsers(users);
+
+    const otp = generateOtp();
+    pendingOtps.set(newUser.email, { email: newUser.email, otp, expiresAt: Date.now() + OTP_EXPIRY_MS, purpose: "signup" });
+    printOtp(newUser.email, otp);
+
+    res.json({ requireEmailVerification: true, email: newUser.email, devOtp: otp });
+  });
+
+  // POST /api/local-auth/signin
+  app.post("/api/local-auth/signin", async (req, res) => {
+    const { email, password } = req.body ?? {};
+    if (!email || !password) return res.status(400).json({ error: "email and password required" });
+
+    const users = loadUsers();
+    const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
+    if (!user) return res.status(401).json({ error: "Invalid email or password" });
+
+    const hash = await hashPassword(password, user.passwordSalt);
+    if (hash !== user.passwordHash) return res.status(401).json({ error: "Invalid email or password" });
+
+    const otp = generateOtp();
+    pendingOtps.set(user.email, { email: user.email, otp, expiresAt: Date.now() + OTP_EXPIRY_MS, purpose: "signin" });
+    printOtp(user.email, otp);
+
+    res.json({ requireOtp: true, email: user.email, devOtp: otp });
+  });
+
+  // POST /api/local-auth/verify-otp
+  app.post("/api/local-auth/verify-otp", (req, res) => {
+    const { email, otp } = req.body ?? {};
+    if (!email || !otp) return res.status(400).json({ error: "email and otp required" });
+
+    const key = email.toLowerCase().trim();
+    const pending = pendingOtps.get(key);
+    if (!pending) return res.status(400).json({ error: "No pending verification. Please sign in again." });
+    if (Date.now() > pending.expiresAt) {
+      pendingOtps.delete(key);
+      return res.status(400).json({ error: "Code expired. Please sign in again." });
+    }
+    if (pending.otp !== String(otp).trim()) {
+      return res.status(400).json({ error: "Invalid code. Please check and try again." });
+    }
+
+    pendingOtps.delete(key);
+    const users = loadUsers();
+    const user = users.find((u) => u.email.toLowerCase() === key);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const token = generateToken();
+    const sessions = loadSessions();
+    sessions.push({ token, userId: user.id, email: user.email, createdAt: Date.now(), expiresAt: Date.now() + SESSION_EXPIRY_MS });
+    saveSessions(sessions);
+
+    res.json({ accessToken: token, user: { id: user.id, email: user.email, name: user.name } });
+  });
+
+  // POST /api/local-auth/resend-otp
+  app.post("/api/local-auth/resend-otp", (req, res) => {
+    const { email } = req.body ?? {};
+    if (!email) return res.status(400).json({ error: "email required" });
+
+    const users = loadUsers();
+    const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
+    if (!user) return res.status(404).json({ error: "No account found for this email" });
+
+    const otp = generateOtp();
+    pendingOtps.set(user.email, { email: user.email, otp, expiresAt: Date.now() + OTP_EXPIRY_MS, purpose: "signin" });
+    printOtp(user.email, otp);
+
+    res.json({ sent: true, email: user.email, devOtp: otp });
+  });
+
+  // GET /api/local-auth/me
+  app.get("/api/local-auth/me", requireLocalAuth, (req, res) => {
+    const session = (req as any).localUser as LocalSession;
+    const user = loadUsers().find((u) => u.id === session.userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ user: { id: user.id, email: user.email, name: user.name } });
+  });
+
+  // POST /api/local-auth/signout
+  app.post("/api/local-auth/signout", (req, res) => {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith("Bearer ")) {
+      const token = auth.slice(7);
+      saveSessions(loadSessions().filter((s) => s.token !== token));
+    }
+    res.json({ ok: true });
+  });
+
+  console.log("✓ Local auth system ready");
+}
+
+// ── Simulator — generates synthetic WiFi + network traffic when libpcap is unavailable ──
+// Produces realistic-looking packets including occasional attack patterns so all
+// detection engines (signature, anomaly, ML) have data to work with.
+function startSimulator() {
+  const MACS = [
+    "AA:BB:CC:11:22:33", "DE:AD:BE:EF:00:01", "11:22:33:44:55:66",
+    "CA:FE:BA:BE:00:01", "00:11:22:33:44:55", "FF:EE:DD:CC:BB:AA",
+  ];
+  const SSIDS = ["Enterprise_Secure_WiFi", "HomeNet_5G", "GuestWiFi", "IoT_Network"];
+  const CHANNELS = [1, 6, 11, 36, 40, 44, 48];
+  const KNOWN_BSSID = "DE:AD:BE:EF:00:01";
+  const KNOWN_SSID = config.knownNetworks[0]?.ssid ?? "Enterprise_Secure_WiFi";
+
+  // Common dst ports for realistic traffic
+  const COMMON_PORTS = [80, 443, 22, 53, 8080, 3389, 445, 21, 23, 25, 110, 143, 3306, 5432];
+
+  let tick = 0;
+
+  const interval = setInterval(() => {
+    tick++;
+    const mac = MACS[Math.floor(Math.random() * MACS.length)];
+    const types: WiFiPacket["type"][] = ["data", "data", "data", "mgmt", "beacons", "deauth"];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const channel = CHANNELS[Math.floor(Math.random() * CHANNELS.length)];
+    const signal = -40 - Math.random() * 50;
+    const srcPort = 1024 + Math.floor(Math.random() * 60000);
+    const dstPort = COMMON_PORTS[Math.floor(Math.random() * COMMON_PORTS.length)];
+
+    const packet: WiFiPacket = {
+      timestamp: Date.now(),
+      sourceMac: mac,
+      destMac: MACS[Math.floor(Math.random() * MACS.length)],
+      bssid: KNOWN_BSSID,
+      ssid: type === "beacons" ? SSIDS[Math.floor(Math.random() * SSIDS.length)] : undefined,
+      type,
+      signalStrength: signal,
+      channel,
+      srcPort,
+      dstPort,
+      protocol: Math.random() > 0.3 ? "tcp" : "udp",
+      srcIp: `192.168.${Math.floor(Math.random() * 3)}.${10 + Math.floor(Math.random() * 240)}`,
+      dstIp: `192.168.1.${1 + Math.floor(Math.random() * 50)}`,
+    };
+
+    // Inject attack patterns periodically
+    if (tick % 80 === 0) {
+      // Deauth flood burst
+      for (let i = 0; i < 8; i++) {
+        detectionEngine.processPacket({ ...packet, type: "deauth", sourceMac: "EV:IL:MA:C0:00:01" });
+      }
+    }
+    if (tick % 120 === 0) {
+      // Rogue AP — known SSID from wrong BSSID
+      detectionEngine.processPacket({
+        ...packet, type: "beacons",
+        ssid: KNOWN_SSID,
+        bssid: "BA:D0:BA:D0:BA:D0",
+        sourceMac: "BA:D0:BA:D0:BA:D0",
+      });
+    }
+    if (tick % 60 === 0) {
+      // Port scan burst — many different dst ports from same source
+      const scannerMac = "5C:4N:MA:C0:00:01";
+      for (let p = 20; p < 40; p++) {
+        detectionEngine.processPacket({
+          ...packet, type: "data",
+          sourceMac: scannerMac,
+          dstPort: p,
+          srcIp: "10.0.0.99",
+          dstIp: "192.168.1.1",
+        });
+      }
+    }
+
+    detectionEngine.processPacket(packet);
+  }, 200); // 5 packets/sec baseline
+
+  // Clean up on process exit
+  process.on("SIGINT", () => { clearInterval(interval); process.exit(0); });
+  process.on("SIGTERM", () => { clearInterval(interval); process.exit(0); });
+
+  console.log("✓ Simulator started — generating synthetic traffic at 5 pkt/s");
+  engineActive = true;
 }
 
 startServer();

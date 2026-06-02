@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { insforge } from "../lib/insforge";
+import { insforgeData as insforge } from "../lib/insforge";
 import type { Alert, Analytics, Device, EngineConfig, MLResult, SystemStatus, TrafficBucket } from "../types";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -41,6 +41,7 @@ export function useWidsData() {
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [mlResults, setMlResults] = useState<MLResult[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const initialLoadDone = useRef(false);
 
   // ── fetch live status from the Express server (real capture state) ─────────
   const fetchStatus = useCallback(async () => {
@@ -57,13 +58,15 @@ export function useWidsData() {
         detectionCounts: s.detectionCounts ?? {},
         trustedDevices: s.trustedDevices ?? 0,
         activeInterface: s.activeInterface ?? undefined,
+        captureMode: s.captureMode ?? undefined,
       });
     } catch { /* server may not be reachable in cloud mode */ }
   }, []);
 
   // ── initial data load from InsForge DB ────────────────────────────────────
   const fetchData = useCallback(async () => {
-    setIsLoading(true);
+    // Only show the full-screen loading overlay on the very first load
+    if (!initialLoadDone.current) setIsLoading(true);
     try {
     const [alertsRes, devicesRes, statsRes, configRes, chartRes] = await Promise.all([
       insforge.database.from("alerts").select().eq("dismissed", false).order("timestamp", { ascending: false }).limit(200),
@@ -198,6 +201,7 @@ export function useWidsData() {
     }
     } finally {
       setIsLoading(false);
+      initialLoadDone.current = true;
     }
   }, [fetchStatus]);
 
@@ -205,8 +209,8 @@ export function useWidsData() {
   useEffect(() => {
     fetchData();
 
-    // Poll live status every 10s so the header stays accurate
-    const statusInterval = setInterval(fetchStatus, 10_000);
+    // Poll live status every 30s so the header stays accurate
+    const statusInterval = setInterval(fetchStatus, 30_000);
 
     let connected = false;
 
@@ -235,8 +239,19 @@ export function useWidsData() {
             return [alert, ...prev].slice(0, 200);
           });
           setNewAlertCount((n) => n + 1);
-          // Refresh analytics counts and status
-          fetchData();
+          // Update analytics counts inline — no full reload needed
+          setAnalytics((prev) => {
+            if (!prev) return prev;
+            const dc = { ...prev.detectionCounts };
+            dc[alert.type] = (dc[alert.type] ?? 0) + 1;
+            const sev = { ...prev.alertSeverityBreakdown };
+            if (alert.severity === "high") sev.high++;
+            else if (alert.severity === "medium") sev.medium++;
+            else sev.low++;
+            return { ...prev, detectionCounts: dc, totalDetections: prev.totalDetections + 1, alertSeverityBreakdown: sev };
+          });
+          // Refresh status counts in the background (lightweight, no overlay)
+          fetchStatus();
         });
 
         insforge.realtime.on("device_update", (payload: any) => {

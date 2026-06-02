@@ -5,7 +5,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { insforge } from "./lib/insforge";
+import { insforge, localAuth } from "./lib/insforge";
 import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
@@ -36,29 +36,11 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    // InsForge appends insforge_code after OAuth redirect
-    const hasOAuthCode = params.has("insforge_code") || params.has("code");
-
     const checkAuth = async () => {
-      // Call getCurrentUser() FIRST — the SDK reads insforge_code from the URL
-      // internally and exchanges it for a session before returning.
-      const { data } = await insforge.auth.getCurrentUser();
-
-      // Only clean up the URL AFTER the SDK has had a chance to read the code.
-      if (hasOAuthCode) {
-        window.history.replaceState({}, document.title, window.location.pathname);
-      }
-
-      if (data?.user) {
-        setIsAuthenticated(true);
-        setAuthChecked(true);
-        return;
-      }
-
+      const user = await localAuth.getCurrentUser();
+      if (user) setIsAuthenticated(true);
       setAuthChecked(true);
     };
-
     checkAuth();
   }, []);
 
@@ -222,13 +204,13 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const [currentUser, setCurrentUser] = useState<{ email: string; name?: string; avatar_url?: string; id?: string } | null>(null);
 
   useEffect(() => {
-    insforge.auth.getCurrentUser().then(({ data }) => {
-      if (data?.user) {
+    localAuth.getCurrentUser().then((user) => {
+      if (user) {
         setCurrentUser({
-          id: data.user.id,
-          email: data.user.email,
-          name: data.user.profile?.name ?? undefined,
-          avatar_url: data.user.profile?.avatar_url ?? undefined,
+          id: user.id,
+          email: user.email,
+          name: user.name ?? undefined,
+          avatar_url: undefined,
         });
       }
     });
@@ -279,7 +261,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const exportLogs = useCallback(() => window.open("/api/alerts/export", "_blank"), []);
 
   const handleSignOut = useCallback(async () => {
-    await insforge.auth.signOut();
+    await localAuth.signOut();
     onSignOut();
   }, [onSignOut]);
 
@@ -448,7 +430,9 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
         </div>
         <div className="flex gap-4">
           <span className={cn("font-bold uppercase hidden sm:inline", status?.monitoring ? "text-emerald-500" : "text-rose-500")}>
-            {status?.monitoring ? "Engine Active" : "Engine Offline"}
+            {status?.monitoring
+              ? status.captureMode === "live" ? "Live Capture" : "Engine Active"
+              : "Engine Offline"}
           </span>
           <span className="text-amber-500 font-bold uppercase whitespace-nowrap">SALAMANDA v2.0</span>
         </div>

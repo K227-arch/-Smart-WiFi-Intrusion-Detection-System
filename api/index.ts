@@ -237,6 +237,9 @@ app.get("/api/anomaly-baseline", (_req, res) => {
     stdPacketRate: 0,
     sampleCount: 0,
     lastUpdated: Date.now(),
+    deviceProfiles: 0,
+    zThreshold: 3.5,
+    minSamples: 5,
     note: "Baseline computed by local engine only",
   });
 });

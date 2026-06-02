@@ -52,7 +52,7 @@ export function NetworkTab() {
 
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 5000);
+    const interval = setInterval(fetchAll, 30_000);
     return () => clearInterval(interval);
   }, [fetchAll]);
 

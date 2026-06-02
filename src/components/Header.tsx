@@ -79,8 +79,8 @@ export const Header = memo(function Header({
         <div className="hidden md:flex items-center gap-2">
           <div
             className={cn(
-              "w-2 h-2 rounded-full animate-pulse",
-              status?.monitoring ? "bg-emerald-500" : "bg-rose-500"
+              "w-2 h-2 rounded-full",
+              status?.monitoring ? "bg-emerald-500 animate-pulse" : "bg-rose-500"
             )}
           />
           <span
@@ -89,7 +89,9 @@ export const Header = memo(function Header({
               status?.monitoring ? "text-emerald-500" : "text-rose-500"
             )}
           >
-            {status?.monitoring ? "Active" : "Offline"}
+            {status?.monitoring
+              ? status.captureMode === "live" ? "Live Capture" : "Active"
+              : "Offline"}
           </span>
         </div>
 

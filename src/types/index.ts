@@ -32,6 +32,12 @@ export interface WiFiPacket {
   type: "data" | "mgmt" | "beacons" | "deauth";
   signalStrength: number;
   channel: number;
+  // Layer-4 port info (populated when real Ethernet/IP capture is active)
+  srcPort?: number;
+  dstPort?: number;
+  protocol?: "tcp" | "udp" | "icmp";
+  srcIp?: string;
+  dstIp?: string;
 }
 
 export interface SystemStatus {
@@ -43,6 +49,7 @@ export interface SystemStatus {
   detectionCounts: Record<string, number>;
   trustedDevices: number;
   activeInterface?: string;
+  captureMode?: "live" | "simulator";
 }
 
 export interface Analytics {

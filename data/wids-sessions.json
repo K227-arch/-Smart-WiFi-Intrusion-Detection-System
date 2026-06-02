@@ -1,0 +1,16 @@
+[
+  {
+    "token": "e9bd2588821dfeb68c9003ecf7db06970008ee3227d65e2b436a97f3d8182f97",
+    "userId": "1b949060c12cdfe929e32536f6b95a71",
+    "email": "admin@wids.local",
+    "createdAt": 1780338297202,
+    "expiresAt": 1780943097202
+  },
+  {
+    "token": "372df780d6d033d84152817e68220ad73a14d0cafd37e4f63f82a6be7fcd5eb5",
+    "userId": "5a913ec5d68399fcd73c578c1a77bfc2",
+    "email": "keithtwesigye74@gmail.com",
+    "createdAt": 1780338916772,
+    "expiresAt": 1780943716772
+  }
+]
