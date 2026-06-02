@@ -1,15 +1,19 @@
-import {
+﻿import {
   Activity,
+  CheckCircle2,
+  Cpu,
+  Network,
   Plus,
+  RefreshCw,
   Save,
   Shield,
   Trash2,
   Wifi,
 } from "lucide-react";
 import { motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { cn } from "../lib/utils";
-import type { EngineConfig, KnownNetwork } from "../types";
+import type { EngineConfig, KnownNetwork, NetworkInterface } from "../types";
 
 interface SettingsTabProps {
   engineConfig: EngineConfig | null;
@@ -17,12 +21,33 @@ interface SettingsTabProps {
 }
 
 const DETECTION_RULES = [
-  { title: "Rogue AP (Evil Twin)", rule: "IF SSID matches known network AND BSSID is different → FLAG as Rogue AP", color: "border-rose-500/30 bg-rose-500/5" },
-  { title: "Deauth Flood Attack", rule: "IF Deauth packets ≥ threshold within window from same source → FLAG as DoS", color: "border-orange-500/30 bg-orange-500/5" },
-  { title: "MAC Spoofing", rule: "IF known SSID is broadcast from a new/unknown BSSID → FLAG as MAC Spoofing", color: "border-purple-500/30 bg-purple-500/5" },
-  { title: "Channel Anomaly", rule: "IF known BSSID suddenly broadcasts on a different channel → FLAG as anomaly", color: "border-amber-500/30 bg-amber-500/5" },
-  { title: "Unauthorized Device", rule: "IF MAC address not in trusted whitelist AND first time seen → FLAG device", color: "border-amber-500/30 bg-amber-500/5" },
+  { title: "Rogue AP (Evil Twin)", rule: "IF SSID matches known network AND BSSID is different â†’ FLAG as Rogue AP", color: "border-rose-500/30 bg-rose-500/5" },
+  { title: "Deauth Flood Attack", rule: "IF Deauth packets â‰¥ threshold within window from same source â†’ FLAG as DoS", color: "border-orange-500/30 bg-orange-500/5" },
+  { title: "MAC Spoofing", rule: "IF known SSID is broadcast from a new/unknown BSSID â†’ FLAG as MAC Spoofing", color: "border-purple-500/30 bg-purple-500/5" },
+  { title: "Channel Anomaly", rule: "IF known BSSID suddenly broadcasts on a different channel â†’ FLAG as anomaly", color: "border-amber-500/30 bg-amber-500/5" },
+  { title: "Unauthorized Device", rule: "IF MAC address not in trusted whitelist AND first time seen â†’ FLAG device", color: "border-amber-500/30 bg-amber-500/5" },
 ];
+
+function InterfaceTypeIcon({ type }: { type: NetworkInterface["type"] }) {
+  if (type === "wifi") return <Wifi className="w-3.5 h-3.5 text-amber-400" />;
+  if (type === "ethernet") return <Network className="w-3.5 h-3.5 text-emerald-400" />;
+  return <Cpu className="w-3.5 h-3.5 text-slate-500" />;
+}
+
+function InterfaceTypeBadge({ type }: { type: NetworkInterface["type"] }) {
+  const styles: Record<NetworkInterface["type"], string> = {
+    wifi:     "bg-amber-500/15 text-amber-400 border-amber-500/30",
+    ethernet: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+    loopback: "bg-slate-700 text-slate-500 border-slate-600",
+    virtual:  "bg-slate-700 text-slate-500 border-slate-600",
+    unknown:  "bg-slate-700 text-slate-400 border-slate-600",
+  };
+  return (
+    <span className={cn("px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase", styles[type])}>
+      {type}
+    </span>
+  );
+}
 
 export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
   const [networks, setNetworks] = useState<KnownNetwork[]>([]);
@@ -33,6 +58,42 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
   const [newMac, setNewMac] = useState("");
   const [newNetwork, setNewNetwork] = useState<KnownNetwork>({ ssid: "", bssid: "", channel: 6 });
   const [saved, setSaved] = useState(false);
+
+  // â”€â”€ Network interface state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const [interfaces, setInterfaces] = useState<NetworkInterface[]>([]);
+  const [activeCapture, setActiveCapture] = useState<string>("");
+  const [captureMode, setCaptureMode] = useState<string>("");
+  const [ifaceLoading, setIfaceLoading] = useState(false);
+  const [ifaceMsg, setIfaceMsg] = useState<string | null>(null);
+
+  const fetchInterfaces = useCallback(async () => {
+    setIfaceLoading(true);
+    try {
+      const res = await fetch("/api/network/interfaces");
+      const data = await res.json();
+      setInterfaces(data.interfaces ?? []);
+      setActiveCapture(data.activeCapture ?? "");
+      setCaptureMode(data.captureMode ?? "");
+    } catch { /* ignore */ }
+    setIfaceLoading(false);
+  }, []);
+
+  useEffect(() => { fetchInterfaces(); }, [fetchInterfaces]);
+
+  const selectInterface = async (name: string) => {
+    try {
+      const res = await fetch("/api/network/interfaces/select", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      setIfaceMsg(data.message ?? "Interface saved â€” restart to apply.");
+      setTimeout(() => setIfaceMsg(null), 5000);
+    } catch {
+      setIfaceMsg("Failed to save interface preference.");
+    }
+  };
 
   useEffect(() => {
     if (!engineConfig) return;
@@ -51,7 +112,6 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
 
   const addNetwork = () => {
     if (!newNetwork.ssid || !newNetwork.bssid) return;
-    // Validate BSSID format: XX:XX:XX:XX:XX:XX
     const bssidRegex = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
     if (!bssidRegex.test(newNetwork.bssid)) return;
     setNetworks((prev) => [...prev, { ...newNetwork }]);
@@ -98,7 +158,100 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
 
-        {/* ── Known Networks ── */}
+        {/* â”€â”€ Capture Interface â”€â”€ */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Network className="w-4 h-4 text-violet-400" />
+              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Capture Interface</h3>
+            </div>
+            <button
+              onClick={fetchInterfaces}
+              disabled={ifaceLoading}
+              className="p-1.5 text-slate-500 hover:text-violet-400 transition-colors"
+              title="Refresh interface list"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", ifaceLoading && "animate-spin")} />
+            </button>
+          </div>
+
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            Select the network interface SALAMANDA monitors. Detected interfaces on this machine are listed below.
+            Changes take effect on the next server restart.
+          </p>
+
+          {/* Current capture status */}
+          <div className="flex items-center gap-3 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg">
+            <div className={cn("w-2 h-2 rounded-full shrink-0", captureMode === "live" ? "bg-emerald-500 animate-pulse" : "bg-amber-400 animate-pulse")} />
+            <span className="text-[10px] text-slate-400 font-mono">
+              Active: <span className="text-white font-bold">{activeCapture || "â€”"}</span>
+            </span>
+            <span className={cn(
+              "ml-auto px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase",
+              captureMode === "live"
+                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                : "bg-amber-500/15 text-amber-400 border-amber-500/30"
+            )}>
+              {captureMode === "live" ? "Live Capture" : "Simulator"}
+            </span>
+          </div>
+
+          {/* Interface list */}
+          <div className="space-y-2">
+            {interfaces.length === 0 && !ifaceLoading && (
+              <p className="text-[10px] text-slate-600 italic px-1">No network interfaces detected.</p>
+            )}
+            {interfaces.map((iface) => (
+              <div
+                key={iface.name}
+                className={cn(
+                  "flex items-center gap-3 p-3 rounded-lg border transition-colors",
+                  iface.isCapturing
+                    ? "bg-violet-500/10 border-violet-500/40"
+                    : "bg-slate-950 border-slate-800 hover:border-slate-700"
+                )}
+              >
+                <InterfaceTypeIcon type={iface.type} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-mono font-bold text-white">{iface.name}</span>
+                    <InterfaceTypeBadge type={iface.type} />
+                    {iface.isCapturing && (
+                      <span className="flex items-center gap-1 text-[9px] font-bold text-violet-400">
+                        <CheckCircle2 className="w-3 h-3" /> Capturing
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-3 mt-0.5">
+                    <span className="text-[10px] text-slate-400 font-mono">{iface.ip}</span>
+                    <span className="text-[10px] text-slate-600 font-mono">{iface.mac}</span>
+                  </div>
+                </div>
+                {!iface.isCapturing && (
+                  <button
+                    onClick={() => selectInterface(iface.name)}
+                    className="shrink-0 px-2 py-1 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 rounded text-[9px] font-bold text-violet-400 transition-colors"
+                  >
+                    Use This
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {ifaceMsg && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[10px] text-amber-400"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              {ifaceMsg}
+            </motion.div>
+          )}
+        </section>
+
+        {/* â”€â”€ Known Networks â”€â”€ */}
         <section className="space-y-4">
           <div className="flex items-center gap-2">
             <Wifi className="w-4 h-4 text-amber-500" />
@@ -158,7 +311,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
           </div>
         </section>
 
-        {/* ── Trusted MAC Whitelist ── */}
+        {/* â”€â”€ Trusted MAC Whitelist â”€â”€ */}
         <section className="space-y-4">
           <div className="flex items-center gap-2">
             <Shield className="w-4 h-4 text-emerald-500" />
@@ -197,7 +350,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
           </div>
         </section>
 
-        {/* ── Detection Thresholds ── */}
+        {/* â”€â”€ Detection Thresholds â”€â”€ */}
         <section className="space-y-4">
           <div className="flex items-center gap-2">
             <Activity className="w-4 h-4 text-orange-500" />
@@ -234,7 +387,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
           </div>
         </section>
 
-        {/* ── Detection Rules Reference ── */}
+        {/* â”€â”€ Detection Rules Reference â”€â”€ */}
         <section className="space-y-3">
           <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Detection Rules Reference</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -251,3 +404,4 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
     </motion.div>
   );
 }
+

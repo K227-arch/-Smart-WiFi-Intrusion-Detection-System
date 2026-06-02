@@ -76,6 +76,15 @@ export interface KnownNetwork {
   channel: number;
 }
 
+export interface NetworkInterface {
+  name: string;
+  type: "wifi" | "ethernet" | "loopback" | "virtual" | "unknown";
+  ip: string;
+  mac: string;
+  isActive: boolean;
+  isCapturing: boolean;
+}
+
 export interface EngineConfig {
   knownNetworks: KnownNetwork[];
   trustedMacs: string[];

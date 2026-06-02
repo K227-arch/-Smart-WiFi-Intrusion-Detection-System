@@ -8,6 +8,7 @@ import {
   Settings as SettingsIcon,
   Shield,
   ShieldAlert,
+  TerminalSquare,
 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn, formatNumber, formatUptime } from "../lib/utils";
@@ -15,7 +16,7 @@ import type { Device, SystemStatus } from "../types";
 import { NavButton } from "./ui/NavButton";
 import { SidebarStat } from "./ui/SidebarStat";
 
-export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "ml" | "network" | "snort" | "settings";
+export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "ml" | "network" | "snort" | "settings" | "terminal";
 
 interface SidebarProps {
   selectedTab: TabId;
@@ -43,11 +44,12 @@ export const Sidebar = memo(function Sidebar({
   return (
     <aside
       className={cn(
-        "absolute lg:relative lg:col-span-2 border-r border-slate-800 bg-slate-900/95 lg:bg-slate-900/30 p-4 space-y-6 flex flex-col h-full z-40 transition-transform duration-300 ease-in-out w-64 lg:w-auto",
+        "absolute lg:relative lg:col-span-2 border-r border-slate-800 bg-slate-900/95 lg:bg-slate-900/30 flex flex-col h-full z-40 transition-transform duration-300 ease-in-out w-64 lg:w-auto overflow-y-auto custom-scrollbar",
         isMenuOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
       )}
     >
-      <div>
+      {/* ── Nav buttons ── */}
+      <div className="p-4 pb-2">
         <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 font-mono">
           Core Modules
         </h3>
@@ -112,10 +114,18 @@ export const Sidebar = memo(function Sidebar({
               <SettingsIcon className="w-3.5 h-3.5" /> Settings
             </span>
           </NavButton>
+
+          <NavButton active={selectedTab === "terminal"} onClick={() => onTabChange("terminal")}>
+            <span className="flex items-center gap-2">
+              <TerminalSquare className="w-3.5 h-3.5 text-emerald-400" />
+              <span className={selectedTab === "terminal" ? "" : "text-emerald-400/80"}>Terminal</span>
+            </span>
+          </NavButton>
         </div>
       </div>
 
-      <div className="pt-6 border-t border-slate-800 hidden lg:block">
+      {/* ── System Metrics ── */}
+      <div className="px-4 pt-6 pb-4 border-t border-slate-800 hidden lg:block">
         <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 font-mono">
           System Metrics
         </h3>
@@ -140,9 +150,8 @@ export const Sidebar = memo(function Sidebar({
           />        </div>
       </div>
 
-      <div className="flex-1" />
-
-      <div className="p-3 bg-slate-900/50 rounded-xl border border-slate-800">
+      {/* ── Quote ── */}
+      <div className="mx-4 mb-4 mt-2 p-3 bg-slate-900/50 rounded-xl border border-slate-800">
         <p className="text-[10px] text-slate-500 leading-relaxed italic">
           "Intelligent detection for resilient wireless environments."
         </p>

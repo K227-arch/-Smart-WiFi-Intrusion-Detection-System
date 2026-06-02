@@ -1287,6 +1287,121 @@ async function startServer() {
   // ── Local Auth System ─────────────────────────────────────────────────────
   setupLocalAuth(app);
 
+  // ── Network Terminal ──────────────────────────────────────────────────────
+  // Executes whitelisted network diagnostic commands only.
+  // Destructive, file-system, and privilege-escalation commands are blocked.
+  {
+    const { exec } = await import("child_process");
+    const { promisify } = await import("util");
+    const execAsync = promisify(exec);
+
+    // ── Command whitelist — only these patterns are allowed ───────────────
+    // Each entry is a regex tested against the full trimmed command (case-insensitive).
+    const ALLOWED_PATTERNS = [
+      /^ipconfig(\s+.*)?$/i,
+      /^arp(\s+.*)?$/i,
+      /^route(\s+(print|add|delete|change).*)?$/i,
+      /^netstat(\s+.*)?$/i,
+      /^nslookup(\s+.*)?$/i,
+      /^tracert(\s+.*)?$/i,
+      /^traceroute(\s+.*)?$/i,
+      /^ping(\s+.*)?$/i,
+      /^netsh\s+wlan(\s+.*)?$/i,
+      /^netsh\s+interface(\s+.*)?$/i,
+      /^netsh\s+advfirewall\s+firewall\s+show(\s+.*)?$/i,
+      /^netsh\s+bridge(\s+.*)?$/i,
+      /^net\s+(share|session|use|view|statistics)(\s+.*)?$/i,
+      /^hostname$/i,
+      /^whoami$/i,
+      /^systeminfo(\s+.*)?$/i,
+      /^tasklist(\s+.*)?$/i,
+      /^sc\s+query(\s+.*)?$/i,
+      /^wmic\s+(nic|nicconfig|os|computersystem)\s+(get|list)(\s+.*)?$/i,
+      /^pathping(\s+.*)?$/i,
+      /^nbtstat(\s+.*)?$/i,
+      /^getmac(\s+.*)?$/i,
+      /^help$/i,
+      /^cls$/i,
+    ];
+
+    // Patterns that are always blocked regardless of above
+    const BLOCKED_PATTERNS = [
+      /rm\b|del\b|format\b|mkfs\b/i,
+      /shutdown|reboot|restart/i,
+      /powershell|cmd\.exe|bash|sh\b|zsh\b/i,
+      /curl\b|wget\b|invoke-webrequest|fetch\b/i,
+      /reg\b.*\badd\b|reg\b.*\bdelete\b/i,
+      /net\s+(user|group|localgroup|computer|accounts|config|stop|start)/i,
+      /sc\s+(start|stop|delete|create|config)/i,
+      /runas\b|sudo\b/i,
+      /\|\s*(powershell|cmd|bash|sh)\b/i,
+      /&&|;|\|/,                      // command chaining
+      />\s*\w|>>/,                     // file redirection
+      /`[^`]*`|\$\(/,                  // command substitution
+    ];
+
+    app.post("/api/terminal/exec", async (req, res) => {
+      const { command } = req.body ?? {};
+      if (!command || typeof command !== "string") {
+        return res.status(400).json({ error: "command required" });
+      }
+
+      const cmd = command.trim();
+
+      // Handle built-ins
+      if (cmd.toLowerCase() === "help") {
+        return res.json({
+          stdout: [
+            "SALAMANDA Terminal — Allowed Commands:",
+            "  Network:    ipconfig, arp, route, netstat, netsh wlan, netsh interface",
+            "  DNS:        nslookup, ipconfig /flushdns, ipconfig /displaydns",
+            "  Testing:    ping, tracert, traceroute, pathping",
+            "  WiFi:       netsh wlan show networks/interfaces/profiles",
+            "  Security:   netsh advfirewall, net share, net session",
+            "  System:     hostname, whoami, systeminfo, tasklist, getmac, wmic nic",
+            "",
+            "Tips:",
+            "  ↑ / ↓   Navigate command history",
+            "  Tab     Autocomplete from quick commands",
+            "  Ctrl+L  Clear terminal",
+          ].join("\n"),
+        });
+      }
+
+      if (cmd.toLowerCase() === "cls") {
+        return res.json({ stdout: "\x1B[2J\x1B[H", clear: true });
+      }
+
+      // Check blocked patterns first
+      for (const pattern of BLOCKED_PATTERNS) {
+        if (pattern.test(cmd)) {
+          return res.json({ blocked: true, command: cmd });
+        }
+      }
+
+      // Check allowed patterns
+      const allowed = ALLOWED_PATTERNS.some((p) => p.test(cmd));
+      if (!allowed) {
+        return res.json({ blocked: true, command: cmd });
+      }
+
+      try {
+        const { stdout, stderr } = await execAsync(cmd, {
+          timeout: 15_000,
+          maxBuffer: 512 * 1024, // 512 KB max output
+          windowsHide: true,
+        });
+        res.json({ stdout: stdout || "", stderr: stderr || "" });
+      } catch (err: any) {
+        // execAsync throws on non-zero exit — stderr is usually the useful part
+        res.json({
+          stdout: err.stdout || "",
+          stderr: err.stderr || err.message || "Command failed",
+        });
+      }
+    });
+  }
+
   // GET /api/ml-results
   app.get("/api/ml-results", (_req, res) => {
     res.json(mlResults);
@@ -1496,6 +1611,95 @@ async function startServer() {
 
   // GET /api/network/alerts
   app.get("/api/network/alerts", (_req, res) => res.json(networkAlerts.slice(0, 100)));
+
+  // GET /api/network/interfaces — enumerate all active network interfaces on this machine
+  app.get("/api/network/interfaces", (_req, res) => {
+    const ifaces = os.networkInterfaces();
+    const results: Array<{
+      name: string;
+      type: "wifi" | "ethernet" | "loopback" | "virtual" | "unknown";
+      ip: string;
+      mac: string;
+      isActive: boolean;
+      isCapturing: boolean;
+    }> = [];
+
+    // Heuristics for interface type from name
+    function guessType(name: string): "wifi" | "ethernet" | "loopback" | "virtual" | "unknown" {
+      const n = name.toLowerCase();
+      if (n === "lo" || n === "lo0" || n.startsWith("loopback")) return "loopback";
+      if (n.startsWith("wlan") || n.startsWith("wi-fi") || n.startsWith("wifi") ||
+          n.startsWith("en") || n.startsWith("wlp") || n.startsWith("ath") ||
+          n.startsWith("wl")) return "wifi";
+      if (n.startsWith("eth") || n.startsWith("enp") || n.startsWith("eno") ||
+          n.startsWith("ethernet") || n.startsWith("local area")) return "ethernet";
+      if (n.startsWith("docker") || n.startsWith("veth") || n.startsWith("vmnet") ||
+          n.startsWith("vboxnet") || n.startsWith("virbr") || n.startsWith("br-")) return "virtual";
+      return "unknown";
+    }
+
+    for (const [name, addrs] of Object.entries(ifaces)) {
+      if (!addrs) continue;
+      const ipv4 = addrs.find((a) => a.family === "IPv4" && !a.internal);
+      if (!ipv4) continue; // skip loopback and interfaces without IPv4
+
+      const type = guessType(name);
+      if (type === "loopback" || type === "virtual") continue; // skip these
+
+      results.push({
+        name,
+        type,
+        ip: ipv4.address,
+        mac: ipv4.mac ?? "unknown",
+        isActive: true,
+        isCapturing: name === ACTIVE_IFACE,
+      });
+    }
+
+    // Also include the currently active capture interface even if it has no IPv4
+    // (raw 802.11 monitor mode interfaces may not have an IP)
+    if (!results.find((r) => r.name === ACTIVE_IFACE)) {
+      const addrs = ifaces[ACTIVE_IFACE];
+      const addr = addrs?.find((a) => !a.internal);
+      if (addr) {
+        results.unshift({
+          name: ACTIVE_IFACE,
+          type: guessType(ACTIVE_IFACE),
+          ip: addr.family === "IPv4" ? addr.address : "—",
+          mac: addr.mac ?? "unknown",
+          isActive: true,
+          isCapturing: true,
+        });
+      }
+    }
+
+    res.json({
+      interfaces: results,
+      activeCapture: ACTIVE_IFACE,
+      captureMode: captureEngine.isLive() ? "live" : "simulator",
+    });
+  });
+
+  // POST /api/network/interfaces/select — change the capture interface
+  app.post("/api/network/interfaces/select", (req, res) => {
+    // In a running process we can't hot-swap the capture interface without restarting.
+    // We save it to the config so it's picked up on next restart.
+    const { name } = req.body ?? {};
+    if (!name) return res.status(400).json({ error: "interface name required" });
+    process.env.CAPTURE_IFACE = name;
+    // Persist to .env.local so it survives restarts
+    const envPath = path.join(process.cwd(), ".env.local");
+    try {
+      let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf-8") : "";
+      if (content.includes("CAPTURE_IFACE=")) {
+        content = content.replace(/^CAPTURE_IFACE=.*/m, `CAPTURE_IFACE=${name}`);
+      } else {
+        content += `\nCAPTURE_IFACE=${name}\n`;
+      }
+      fs.writeFileSync(envPath, content);
+    } catch { /* ignore */ }
+    res.json({ message: `Capture interface set to ${name}. Restart the server to apply.`, name });
+  });
 
   // GET /api/network/stats
   app.get("/api/network/stats", (_req, res) => {

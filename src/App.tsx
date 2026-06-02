@@ -28,6 +28,7 @@ import { MLTab } from "./tabs/MLTab";
 import { NetworkTab } from "./tabs/NetworkTab";
 import { SnortTab } from "./tabs/SnortTab";
 import { SettingsTab } from "./tabs/SettingsTab";
+import { TerminalTab } from "./tabs/TerminalTab";
 
 import type { Alert, Analytics, Device, MLResult } from "./types";
 
@@ -400,6 +401,13 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
                     engineConfig={engineConfig}
                     onSaveConfig={saveConfig}
                   />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "terminal" && (
+              <Fragment key="terminal">
+                <ErrorBoundary fallbackLabel="Terminal Error">
+                  <TerminalTab />
                 </ErrorBoundary>
               </Fragment>
             )}
