@@ -130,3 +130,4 @@ for name, pipeline in [("wids_rf_v2", rf_pipeline), ("wids_nb_v2", nb_pipeline)]
 print("\nFeatures: [duration, protocol_type, src_bytes, dst_bytes, land,")
 print("           wrong_fragment, urgent, count, srv_count, serror_rate]")
 print("Classes:  0=Normal  1=DoS  2=Probe  3=R2L  4=U2R")
+ 
