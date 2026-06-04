@@ -3,12 +3,31 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import https from "https";
+import { execSync } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
 import * as ort from "onnxruntime-node";
 import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
 import { NetworkAnalyzer, type NetworkAlert, addOwnIp } from "./src/capture/networkAnalyzer";
 import { loadSnortRules, matchSnortRule, ensureDefaultRulesFile, type SnortRuleParsed } from "./src/capture/snortRules";
+
+// ── Load .env.local — inline to avoid tsx bundler issues with dotenv import ──
+// We read the file directly and push vars into process.env before anything else.
+try {
+  const envPath = path.join(process.cwd(), ".env.local");
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, "utf-8").split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+      if (key && !(key in process.env)) process.env[key] = val;
+    }
+  }
+} catch { /* ignore */ }
 
 // ── Auto-detect the active WiFi interface ────────────────────────────────────
 // Walks all network interfaces and returns the first one that is up, not
@@ -159,11 +178,11 @@ function heuristicScore(features: number[]): { score: number; classIndex: number
 }
 
 // ── Insforge client (server-side, uses API key directly) ──────────────────────
-const db = createClient({
-  baseUrl: "https://bh9n4s8r.us-east.insforge.app",
-  anonKey:
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo",
-});
+const INSFORGE_BASE = process.env.INSFORGE_BASE_URL ?? "https://bh9n4s8r.us-east.insforge.app";
+const INSFORGE_KEY  = process.env.INSFORGE_API_KEY ??
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo";
+
+const db = createClient({ baseUrl: INSFORGE_BASE, anonKey: INSFORGE_KEY });
 
 // --- Types ---
 interface WiFiPacket {
@@ -190,6 +209,7 @@ interface Alert {
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
+  targetIp?: string;   // preferred display — IP of attacker/flagged host
   details: any;
 }
 
@@ -628,6 +648,7 @@ networkAnalyzer.on("alert", (na: NetworkAlert) => {
     type: alertType as Alert["type"],
     severity: na.severity,
     targetMac: na.srcMac ?? na.srcIp ?? "unknown",
+    targetIp: na.srcIp,
     description: na.description,
     details: { ...na.details, networkAlertType: na.type, detectionMethod: na.detectionMethod, srcIp: na.srcIp, dstIp: na.dstIp },
   }, config.dedupWindowMs);
@@ -679,6 +700,7 @@ captureEngine.on("packet", (pkt: CapturedPacket) => {
           type: "ANOMALY",
           severity: rule.priority === 1 ? "high" : rule.priority === 2 ? "medium" : "low",
           targetMac: pkt.srcMac,
+          targetIp: pkt.srcIp,
           description: `[SID:${rule.sid}] ${rule.msg} — src: ${pkt.srcIp} → dst: ${pkt.dstIp ?? pkt.dstMac}`,
           details: { sid: rule.sid, rule: rule.msg, srcIp: pkt.srcIp, dstIp: pkt.dstIp, srcPort: pkt.srcPort, dstPort: pkt.dstPort, method: "snort" },
         }, config.dedupWindowMs * 5);
@@ -707,6 +729,7 @@ captureEngine.on("packet", (pkt: CapturedPacket) => {
           type: classIndex === 1 ? "DEAUTH_ATTACK" : classIndex === 2 ? "PORT_SCAN" : "ANOMALY",
           severity: classIndex === 1 ? "high" : classIndex === 2 ? "medium" : "high",
           targetMac: pkt.srcMac,
+          targetIp: pkt.srcIp,
           description: `NSL-KDD ML (v2): ${pkt.srcIp} classified as ${className} (confidence: ${(confidence * 100).toFixed(0)}%).`,
           details: { srcIp: pkt.srcIp, dstIp: pkt.dstIp, className, confidence, classIndex, model: "wids_rf_v2", method: "ml-nslkdd" },
         }, 300_000); // 5-minute dedup per MAC+type
@@ -737,6 +760,7 @@ const detectionEngine = {
           type: "ROGUE_AP",
           severity: "high",
           targetMac: packet.bssid,
+          targetIp: packet.srcIp,
           description: `Rogue AP detected: SSID "${packet.ssid}" broadcast from unauthorized BSSID ${packet.bssid}. Expected ${knownNet.bssid}.`,
           details: { expectedBssid: knownNet.bssid, actualBssid: packet.bssid, ssid: packet.ssid },
         }, dedupWindowMs);
@@ -1244,7 +1268,9 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
     severity: newAlert.severity,
     description: newAlert.description,
     target_mac: newAlert.targetMac,
-    details: newAlert.details,
+    details: newAlert.targetIp
+      ? { ...newAlert.details, targetIp: newAlert.targetIp }
+      : newAlert.details,
     dismissed: false,
   }]), "alert insert");
 
@@ -1288,57 +1314,12 @@ async function startServer() {
   setupLocalAuth(app);
 
   // ── Network Terminal ──────────────────────────────────────────────────────
-  // Executes whitelisted network diagnostic commands only.
-  // Destructive, file-system, and privilege-escalation commands are blocked.
+  // Executes any shell command — no whitelist restrictions.
+  // Output is capped at 512 KB and times out after 30 seconds.
   {
     const { exec } = await import("child_process");
     const { promisify } = await import("util");
     const execAsync = promisify(exec);
-
-    // ── Command whitelist — only these patterns are allowed ───────────────
-    // Each entry is a regex tested against the full trimmed command (case-insensitive).
-    const ALLOWED_PATTERNS = [
-      /^ipconfig(\s+.*)?$/i,
-      /^arp(\s+.*)?$/i,
-      /^route(\s+(print|add|delete|change).*)?$/i,
-      /^netstat(\s+.*)?$/i,
-      /^nslookup(\s+.*)?$/i,
-      /^tracert(\s+.*)?$/i,
-      /^traceroute(\s+.*)?$/i,
-      /^ping(\s+.*)?$/i,
-      /^netsh\s+wlan(\s+.*)?$/i,
-      /^netsh\s+interface(\s+.*)?$/i,
-      /^netsh\s+advfirewall\s+firewall\s+show(\s+.*)?$/i,
-      /^netsh\s+bridge(\s+.*)?$/i,
-      /^net\s+(share|session|use|view|statistics)(\s+.*)?$/i,
-      /^hostname$/i,
-      /^whoami$/i,
-      /^systeminfo(\s+.*)?$/i,
-      /^tasklist(\s+.*)?$/i,
-      /^sc\s+query(\s+.*)?$/i,
-      /^wmic\s+(nic|nicconfig|os|computersystem)\s+(get|list)(\s+.*)?$/i,
-      /^pathping(\s+.*)?$/i,
-      /^nbtstat(\s+.*)?$/i,
-      /^getmac(\s+.*)?$/i,
-      /^help$/i,
-      /^cls$/i,
-    ];
-
-    // Patterns that are always blocked regardless of above
-    const BLOCKED_PATTERNS = [
-      /rm\b|del\b|format\b|mkfs\b/i,
-      /shutdown|reboot|restart/i,
-      /powershell|cmd\.exe|bash|sh\b|zsh\b/i,
-      /curl\b|wget\b|invoke-webrequest|fetch\b/i,
-      /reg\b.*\badd\b|reg\b.*\bdelete\b/i,
-      /net\s+(user|group|localgroup|computer|accounts|config|stop|start)/i,
-      /sc\s+(start|stop|delete|create|config)/i,
-      /runas\b|sudo\b/i,
-      /\|\s*(powershell|cmd|bash|sh)\b/i,
-      /&&|;|\|/,                      // command chaining
-      />\s*\w|>>/,                     // file redirection
-      /`[^`]*`|\$\(/,                  // command substitution
-    ];
 
     app.post("/api/terminal/exec", async (req, res) => {
       const { command } = req.body ?? {};
@@ -1348,17 +1329,21 @@ async function startServer() {
 
       const cmd = command.trim();
 
-      // Handle built-ins
+      // Built-in: help
       if (cmd.toLowerCase() === "help") {
         return res.json({
           stdout: [
-            "SALAMANDA Terminal — Allowed Commands:",
-            "  Network:    ipconfig, arp, route, netstat, netsh wlan, netsh interface",
-            "  DNS:        nslookup, ipconfig /flushdns, ipconfig /displaydns",
-            "  Testing:    ping, tracert, traceroute, pathping",
-            "  WiFi:       netsh wlan show networks/interfaces/profiles",
-            "  Security:   netsh advfirewall, net share, net session",
-            "  System:     hostname, whoami, systeminfo, tasklist, getmac, wmic nic",
+            "SALAMANDA Terminal — Full shell access",
+            "",
+            "Quick reference:",
+            "  Network:    ipconfig, arp -a, netstat -ano, route print",
+            "  DNS:        nslookup, ipconfig /flushdns",
+            "  Ping:       ping <host>, tracert <host>",
+            "  WiFi:       netsh wlan show networks/interfaces",
+            "  Processes:  tasklist, taskkill /PID <pid>",
+            "  Files:      dir, cd, type, copy, move, del",
+            "  System:     systeminfo, hostname, whoami, ver",
+            "  Python/ML:  python ml\\train_nslkdd.py",
             "",
             "Tips:",
             "  ↑ / ↓   Navigate command history",
@@ -1368,36 +1353,153 @@ async function startServer() {
         });
       }
 
-      if (cmd.toLowerCase() === "cls") {
-        return res.json({ stdout: "\x1B[2J\x1B[H", clear: true });
-      }
-
-      // Check blocked patterns first
-      for (const pattern of BLOCKED_PATTERNS) {
-        if (pattern.test(cmd)) {
-          return res.json({ blocked: true, command: cmd });
-        }
-      }
-
-      // Check allowed patterns
-      const allowed = ALLOWED_PATTERNS.some((p) => p.test(cmd));
-      if (!allowed) {
-        return res.json({ blocked: true, command: cmd });
+      // Built-in: cls / clear
+      if (cmd.toLowerCase() === "cls" || cmd.toLowerCase() === "clear") {
+        return res.json({ stdout: "", clear: true });
       }
 
       try {
         const { stdout, stderr } = await execAsync(cmd, {
-          timeout: 15_000,
-          maxBuffer: 512 * 1024, // 512 KB max output
+          timeout: 30_000,
+          maxBuffer: 512 * 1024,
           windowsHide: true,
+          shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
         });
         res.json({ stdout: stdout || "", stderr: stderr || "" });
       } catch (err: any) {
-        // execAsync throws on non-zero exit — stderr is usually the useful part
         res.json({
           stdout: err.stdout || "",
           stderr: err.stderr || err.message || "Command failed",
         });
+      }
+    });
+
+    // ── POST /api/terminal/ai — AI agent that plans + runs commands ──────────
+    // Accepts a natural-language task, uses Gemini to plan which commands to
+    // run, executes them one by one, and returns a stream of agent steps.
+    app.post("/api/terminal/ai", async (req, res) => {
+      const { task } = req.body ?? {};
+      if (!task || typeof task !== "string") {
+        return res.status(400).json({ error: "task required" });
+      }
+
+      const GEMINI_KEY = process.env.GEMINI_API_KEY;
+      if (!GEMINI_KEY || GEMINI_KEY === "placeholder_key_for_testing") {
+        return res.status(503).json({
+          error: "Gemini API key not configured. Set GEMINI_API_KEY in .env.local to enable the AI agent.",
+        });
+      }
+
+      // ── System prompt for the network AI agent ────────────────────────────
+      const SYSTEM_PROMPT = `You are SALAMANDA AI — a network security assistant with full shell access to a Windows machine running a WiFi Intrusion Detection System.
+
+Your job: given a user task, figure out which shell commands to run, run them in order, and explain the results clearly.
+
+Rules:
+- Respond with a JSON object matching this schema exactly:
+  {
+    "plan": "Brief explanation of what you will do (1-2 sentences)",
+    "commands": ["cmd1", "cmd2", ...],
+    "explanation": "What each command does and what to look for in the output"
+  }
+- commands: array of shell commands to execute in sequence (Windows cmd.exe syntax)
+- Keep commands practical and targeted — don't run more than 6 commands
+- Focus on network diagnostics, security checks, and system info
+- If the task is a question (not a command task), put [] for commands and answer in explanation
+- Never include harmful, destructive, or irreversible commands`;
+
+      try {
+        // ── Step 1: Ask Gemini to plan the commands ──────────────────────────
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+              contents: [{ role: "user", parts: [{ text: task }] }],
+              generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
+            }),
+          }
+        );
+
+        if (!geminiRes.ok) {
+          const errText = await geminiRes.text();
+          return res.status(502).json({ error: `Gemini API error: ${geminiRes.status} — ${errText.slice(0, 200)}` });
+        }
+
+        const geminiData = await geminiRes.json();
+        const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+        // Extract JSON from the response (may have markdown fences)
+        const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/i) ?? rawText.match(/(\{[\s\S]*\})/);
+        let agentPlan: { plan: string; commands: string[]; explanation: string };
+        try {
+          agentPlan = JSON.parse(jsonMatch?.[1] ?? rawText);
+        } catch {
+          // Gemini returned plain text — wrap it
+          agentPlan = { plan: "Responding to your question.", commands: [], explanation: rawText };
+        }
+
+        // ── Step 2: Execute each command and collect results ─────────────────
+        const commandResults: Array<{ command: string; stdout: string; stderr: string }> = [];
+
+        for (const cmd of (agentPlan.commands ?? []).slice(0, 6)) {
+          try {
+            const { stdout, stderr } = await execAsync(cmd.trim(), {
+              timeout: 20_000,
+              maxBuffer: 256 * 1024,
+              windowsHide: true,
+              shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
+            });
+            commandResults.push({ command: cmd, stdout: stdout || "", stderr: stderr || "" });
+          } catch (err: any) {
+            commandResults.push({
+              command: cmd,
+              stdout: err.stdout || "",
+              stderr: err.stderr || err.message || "Command failed",
+            });
+          }
+        }
+
+        // ── Step 3: Ask Gemini to summarise the results ──────────────────────
+        let summary = agentPlan.explanation;
+        if (commandResults.length > 0) {
+          const outputSummary = commandResults
+            .map((r) => `> ${r.command}\n${(r.stdout + r.stderr).slice(0, 800)}`)
+            .join("\n\n");
+
+          const summaryRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                contents: [{
+                  role: "user",
+                  parts: [{
+                    text: `The user asked: "${task}"\n\nI ran these commands and got this output:\n\n${outputSummary}\n\nProvide a clear, concise analysis of the results for a network security engineer. Highlight anything suspicious or important. Be direct — 3 to 6 sentences max.`,
+                  }],
+                }],
+                generationConfig: { temperature: 0.4, maxOutputTokens: 512 },
+              }),
+            }
+          );
+          if (summaryRes.ok) {
+            const summaryData = await summaryRes.json();
+            summary = summaryData?.candidates?.[0]?.content?.parts?.[0]?.text ?? summary;
+          }
+        }
+
+        res.json({
+          plan: agentPlan.plan,
+          commands: agentPlan.commands ?? [],
+          commandResults,
+          summary,
+          explanation: agentPlan.explanation,
+        });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message ?? "AI agent error" });
       }
     });
   }
@@ -1411,8 +1513,8 @@ async function startServer() {
   // The browser can't reach the InsForge backend directly due to TLS cert
   // verification issues on some machines. All /insforge-auth/* requests are
   // proxied through this Express server which already has a working connection.
-  const INSFORGE_BASE = "https://bh9n4s8r.us-east.insforge.app";
-  const INSFORGE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo";
+  // Uses the module-level INSFORGE_BASE and INSFORGE_KEY from env.
+  const INSFORGE_ANON_KEY = INSFORGE_KEY;
 
   // Helper: make an HTTPS request bypassing TLS cert verification
   function httpsRequest(
@@ -2146,16 +2248,57 @@ function setupLocalAuth(app: express.Express) {
 // Produces realistic-looking packets including occasional attack patterns so all
 // detection engines (signature, anomaly, ML) have data to work with.
 function startSimulator() {
-  const MACS = [
+  // ── Seed with REAL devices from this machine's ARP table ─────────────────
+  const realDevices: Array<{ ip: string; mac: string }> = [];
+  try {
+    const arpOut = execSync("arp -a", { timeout: 5000, windowsHide: true }).toString();
+    const lines = arpOut.split("\n");
+    for (const line of lines) {
+      // Windows: "  192.168.1.5           bc-09-1b-fe-68-f7     dynamic"
+      const m = line.match(/(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})/i);
+      if (m) {
+        const ip = m[1];
+        const mac = m[2].replace(/-/g, ":").toUpperCase();
+        // Skip multicast/broadcast
+        if (!ip.startsWith("224.") && !ip.startsWith("239.") && ip !== "255.255.255.255") {
+          realDevices.push({ ip, mac });
+        }
+      }
+    }
+  } catch { /* ARP not available */ }
+
+  // Fall back to synthetic MACs if ARP gave nothing
+  const fallbackMacs = [
     "AA:BB:CC:11:22:33", "DE:AD:BE:EF:00:01", "11:22:33:44:55:66",
     "CA:FE:BA:BE:00:01", "00:11:22:33:44:55", "FF:EE:DD:CC:BB:AA",
   ];
+
+  // Build the working MAC/IP pools
+  const REAL_IPS  = realDevices.map(d => d.ip);
+  const REAL_MACS = realDevices.map(d => d.mac);
+
+  const MACS = REAL_MACS.length >= 3 ? REAL_MACS : fallbackMacs;
+  const IPS  = REAL_IPS.length  >= 3 ? REAL_IPS
+    : Array.from({ length: 8 }, (_, i) => `192.168.1.${10 + i}`);
+
+  // Prime the ARP table in the network analyzer with real entries
+  for (const d of realDevices) {
+    networkAnalyzer.processPacket({
+      timestamp: Date.now(), srcMac: d.mac, dstMac: "FF:FF:FF:FF:FF:FF",
+      etherType: 0x0806, interface: ACTIVE_IFACE, length: 42,
+      arpOp: 2, arpSenderIp: d.ip, arpSenderMac: d.mac,
+      arpTargetIp: IPS[0] ?? d.ip,
+    } as any);
+  }
+
+  if (REAL_MACS.length > 0) {
+    console.log(`✓ Simulator seeded with ${REAL_MACS.length} real LAN device(s) from ARP table`);
+  }
+
   const SSIDS = ["Enterprise_Secure_WiFi", "HomeNet_5G", "GuestWiFi", "IoT_Network"];
   const CHANNELS = [1, 6, 11, 36, 40, 44, 48];
-  const KNOWN_BSSID = "DE:AD:BE:EF:00:01";
+  const KNOWN_BSSID = REAL_MACS[0] ?? "DE:AD:BE:EF:00:01";
   const KNOWN_SSID = config.knownNetworks[0]?.ssid ?? "Enterprise_Secure_WiFi";
-
-  // Common dst ports for realistic traffic
   const COMMON_PORTS = [80, 443, 22, 53, 8080, 3389, 445, 21, 23, 25, 110, 143, 3306, 5432];
 
   let tick = 0;
@@ -2163,6 +2306,7 @@ function startSimulator() {
   const interval = setInterval(() => {
     tick++;
     const mac = MACS[Math.floor(Math.random() * MACS.length)];
+    const ip  = IPS[Math.floor(Math.random() * IPS.length)];
     const types: WiFiPacket["type"][] = ["data", "data", "data", "mgmt", "beacons", "deauth"];
     const type = types[Math.floor(Math.random() * types.length)];
     const channel = CHANNELS[Math.floor(Math.random() * CHANNELS.length)];
@@ -2182,19 +2326,17 @@ function startSimulator() {
       srcPort,
       dstPort,
       protocol: Math.random() > 0.3 ? "tcp" : "udp",
-      srcIp: `192.168.${Math.floor(Math.random() * 3)}.${10 + Math.floor(Math.random() * 240)}`,
-      dstIp: `192.168.1.${1 + Math.floor(Math.random() * 50)}`,
+      srcIp: ip,
+      dstIp: IPS[Math.floor(Math.random() * IPS.length)],
     };
 
     // Inject attack patterns periodically
     if (tick % 80 === 0) {
-      // Deauth flood burst
       for (let i = 0; i < 8; i++) {
-        detectionEngine.processPacket({ ...packet, type: "deauth", sourceMac: "EV:IL:MA:C0:00:01" });
+        detectionEngine.processPacket({ ...packet, type: "deauth", sourceMac: MACS[0] });
       }
     }
     if (tick % 120 === 0) {
-      // Rogue AP — known SSID from wrong BSSID
       detectionEngine.processPacket({
         ...packet, type: "beacons",
         ssid: KNOWN_SSID,
@@ -2203,15 +2345,13 @@ function startSimulator() {
       });
     }
     if (tick % 60 === 0) {
-      // Port scan burst — many different dst ports from same source
-      const scannerMac = "5C:4N:MA:C0:00:01";
       for (let p = 20; p < 40; p++) {
         detectionEngine.processPacket({
           ...packet, type: "data",
-          sourceMac: scannerMac,
+          sourceMac: MACS[0],
           dstPort: p,
-          srcIp: "10.0.0.99",
-          dstIp: "192.168.1.1",
+          srcIp: IPS[0] ?? ip,
+          dstIp: IPS[1] ?? ip,
         });
       }
     }

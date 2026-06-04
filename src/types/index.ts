@@ -7,8 +7,9 @@ export interface Alert {
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
+  targetIp?: string;       // IP address of the attacking/flagged host (preferred display)
   details: any;
-  mlScore?: number;       // 0–1 confidence from ML module
+  mlScore?: number;
   detectionMethod?: "signature" | "anomaly" | "ml";
 }
 
