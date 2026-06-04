@@ -1275,7 +1275,7 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
   }]), "alert insert");
 
   // Update detection_stats running totals (best-effort, non-blocking)
-  db.database.from("detection_stats").select().eq("id", 1).maybeSingle().then(({ data }) => {
+  Promise.resolve(db.database.from("detection_stats").select().eq("id", 1).maybeSingle()).then(({ data }) => {
     if (!data) return;
     const dc = { ...(data.detection_counts ?? {}), [alertData.type]: (data.detection_counts?.[alertData.type] ?? 0) + 1 };
     dbWrite(db.database.from("detection_stats").update({
