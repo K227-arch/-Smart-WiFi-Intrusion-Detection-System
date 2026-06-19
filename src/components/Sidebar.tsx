@@ -1,7 +1,10 @@
 import {
   Activity,
+  ArrowRightLeft,
   BarChart2,
   Brain,
+  Cpu,
+  Globe,
   History,
   Network,
   Server,
@@ -9,6 +12,7 @@ import {
   Shield,
   ShieldAlert,
   TerminalSquare,
+  Wrench,
 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn, formatNumber, formatUptime } from "../lib/utils";
@@ -16,7 +20,10 @@ import type { Device, SystemStatus } from "../types";
 import { NavButton } from "./ui/NavButton";
 import { SidebarStat } from "./ui/SidebarStat";
 
-export type TabId = "dashboard" | "traffic" | "devices" | "alerts" | "analytics" | "ml" | "network" | "snort" | "settings" | "terminal";
+export type TabId =
+  | "dashboard" | "traffic" | "devices" | "alerts" | "analytics"
+  | "ml" | "network" | "snort" | "settings" | "terminal"
+  | "ip" | "routing" | "system" | "tools";
 
 interface SidebarProps {
   selectedTab: TabId;
@@ -119,6 +126,38 @@ export const Sidebar = memo(function Sidebar({
             <span className="flex items-center gap-2">
               <TerminalSquare className="w-3.5 h-3.5 text-emerald-400" />
               <span className={selectedTab === "terminal" ? "" : "text-emerald-400/80"}>Terminal</span>
+            </span>
+          </NavButton>
+        </div>
+      </div>
+
+      {/* ── MikroTik-style network management ── */}
+      <div className="px-4 pb-2">
+        <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 font-mono">
+          Network Management
+        </h3>
+        <div className="space-y-1">
+          <NavButton active={selectedTab === "ip"} onClick={() => onTabChange("ip")}>
+            <span className="flex items-center gap-2">
+              <Globe className="w-3.5 h-3.5" /> IP
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "routing"} onClick={() => onTabChange("routing")}>
+            <span className="flex items-center gap-2">
+              <ArrowRightLeft className="w-3.5 h-3.5" /> Routing
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "system"} onClick={() => onTabChange("system")}>
+            <span className="flex items-center gap-2">
+              <Cpu className="w-3.5 h-3.5" /> System
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "tools"} onClick={() => onTabChange("tools")}>
+            <span className="flex items-center gap-2">
+              <Wrench className="w-3.5 h-3.5" /> Tools
             </span>
           </NavButton>
         </div>

@@ -5,7 +5,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { insforge, localAuth } from "./lib/insforge";
+import { insforge } from "./lib/insforge";
 import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
@@ -28,6 +28,10 @@ import { MLTab } from "./tabs/MLTab";
 import { NetworkTab } from "./tabs/NetworkTab";
 import { SnortTab } from "./tabs/SnortTab";
 import { SettingsTab } from "./tabs/SettingsTab";
+import { IPTab } from "./tabs/IPTab";
+import { RoutingTab } from "./tabs/RoutingTab";
+import { SystemTab } from "./tabs/SystemTab";
+import { ToolsTab } from "./tabs/ToolsTab";
 import { TerminalTab } from "./tabs/TerminalTab";
 
 import type { Alert, Analytics, Device, MLResult } from "./types";
@@ -38,8 +42,15 @@ export default function App() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const user = await localAuth.getCurrentUser();
-      if (user) setIsAuthenticated(true);
+      // Let the SDK handle the insforge_code OAuth callback automatically
+      const { data } = await insforge.auth.getCurrentUser();
+      if (data?.user) setIsAuthenticated(true);
+
+      // Clean up any OAuth callback params from the URL
+      if (window.location.search.includes("insforge_code") || window.location.search.includes("code")) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
       setAuthChecked(true);
     };
     checkAuth();
@@ -205,13 +216,13 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const [currentUser, setCurrentUser] = useState<{ email: string; name?: string; avatar_url?: string; id?: string } | null>(null);
 
   useEffect(() => {
-    localAuth.getCurrentUser().then((user) => {
-      if (user) {
+    insforge.auth.getCurrentUser().then(({ data }) => {
+      if (data?.user) {
         setCurrentUser({
-          id: user.id,
-          email: user.email,
-          name: user.name ?? undefined,
-          avatar_url: undefined,
+          id: data.user.id,
+          email: data.user.email,
+          name: data.user.profile?.name ?? undefined,
+          avatar_url: data.user.profile?.avatar_url ?? undefined,
         });
       }
     });
@@ -262,7 +273,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const exportLogs = useCallback(() => window.open("/api/alerts/export", "_blank"), []);
 
   const handleSignOut = useCallback(async () => {
-    await localAuth.signOut();
+    await insforge.auth.signOut();
     onSignOut();
   }, [onSignOut]);
 
@@ -401,6 +412,34 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
                     engineConfig={engineConfig}
                     onSaveConfig={saveConfig}
                   />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "ip" && (
+              <Fragment key="ip">
+                <ErrorBoundary fallbackLabel="IP Error">
+                  <IPTab />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "routing" && (
+              <Fragment key="routing">
+                <ErrorBoundary fallbackLabel="Routing Error">
+                  <RoutingTab />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "system" && (
+              <Fragment key="system">
+                <ErrorBoundary fallbackLabel="System Error">
+                  <SystemTab />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "tools" && (
+              <Fragment key="tools">
+                <ErrorBoundary fallbackLabel="Tools Error">
+                  <ToolsTab />
                 </ErrorBoundary>
               </Fragment>
             )}

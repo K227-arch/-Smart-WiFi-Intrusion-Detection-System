@@ -1,5 +1,6 @@
 import express from "express";
 import { createClient } from "@insforge/sdk";
+import crypto from "crypto";
 
 // ── Insforge client ───────────────────────────────────────────────────────────
 const db = createClient({
@@ -22,39 +23,195 @@ interface Alert {
 const app = express();
 app.use(express.json());
 
-// ── Seed helpers — ensure required singleton rows exist ───────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function hashPassword(password: string): string {
+  return crypto.createHash("sha256").update(password + "salamanda-salt-2026").digest("hex");
+}
+function generateToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+function generateOtp(): string {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+// ── Seed helpers ──────────────────────────────────────────────────────────────
 async function ensureDetectionStats() {
   const { data } = await db.database.from("detection_stats").select("id").eq("id", 1).maybeSingle();
   if (!data) {
     await db.database.from("detection_stats").insert([{
-      id: 1,
-      detection_counts: {},
-      false_positive_counts: {},
-      total_packets_processed: 0,
-      updated_at: new Date().toISOString(),
+      id: 1, detection_counts: {}, false_positive_counts: {},
+      total_packets_processed: 0, updated_at: new Date().toISOString(),
     }]);
   }
 }
-
 async function ensureEngineConfig() {
   const { data } = await db.database.from("engine_config").select("id").eq("id", 1).maybeSingle();
   if (!data) {
     await db.database.from("engine_config").insert([{
       id: 1,
       known_networks: [{ ssid: "Enterprise_Secure_WiFi", bssid: "DE:AD:BE:EF:00:01", channel: 6 }],
-      trusted_macs: ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"],
-      deauth_threshold: 5,
-      deauth_window_ms: 3000,
-      dedup_window_ms: 10000,
+      trusted_macs: [], deauth_threshold: 5, deauth_window_ms: 3000, dedup_window_ms: 10000,
       updated_at: new Date().toISOString(),
     }]);
   }
 }
 
-// Run seed on cold start
 ensureDetectionStats().catch(console.error);
 ensureEngineConfig().catch(console.error);
 
+// ── Ensure local_users table exists (runs on cold start) ─────────────────────
+async function ensureLocalUsersTable() {
+  try {
+    // Try to select — if table doesn't exist this will error
+    const { error } = await db.database.from("local_users").select("id").limit(1);
+    if (error && String(error.message ?? "").includes("does not exist")) {
+      // Table missing — create it via raw SQL
+      await (db as any).database.rpc("exec_sql", {
+        sql: `CREATE TABLE IF NOT EXISTS local_users (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          password_hash TEXT NOT NULL,
+          verified BOOLEAN DEFAULT FALSE,
+          otp_code TEXT,
+          otp_expires_at TIMESTAMPTZ,
+          session_token TEXT,
+          token_expires_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )`,
+      });
+    }
+  } catch { /* ignore — table may already exist */ }
+}
+ensureLocalUsersTable().catch(console.error);
+
+// ════════════════════════════════════════════════════════════════
+// ── LOCAL AUTH — backed by InsForge DB (works on Vercel) ────────
+// ════════════════════════════════════════════════════════════════
+
+// POST /api/local-auth/signup
+app.post("/api/local-auth/signup", async (req, res) => {
+  const { email, password, name } = req.body ?? {};
+  if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+
+  // Check if user already exists
+  const { data: existing } = await db.database
+    .from("local_users").select("id").eq("email", email.toLowerCase()).maybeSingle();
+  if (existing) return res.status(409).json({ error: "An account with this email already exists" });
+
+  const otp = generateOtp();
+  const otpExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 min
+
+  await db.database.from("local_users").insert([{
+    id: crypto.randomUUID(),
+    email: email.toLowerCase(),
+    name: name ?? null,
+    password_hash: hashPassword(password),
+    verified: false,
+    otp_code: otp,
+    otp_expires_at: otpExpiry,
+    created_at: new Date().toISOString(),
+  }]);
+
+  res.json({ requireEmailVerification: true, email: email.toLowerCase(), devOtp: otp });
+});
+
+// POST /api/local-auth/signin
+app.post("/api/local-auth/signin", async (req, res) => {
+  const { email, password } = req.body ?? {};
+  if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+
+  const { data: user } = await db.database
+    .from("local_users").select().eq("email", email.toLowerCase()).maybeSingle();
+
+  if (!user || user.password_hash !== hashPassword(password))
+    return res.status(401).json({ error: "Invalid email or password" });
+
+  // Issue a fresh OTP for 2FA
+  const otp = generateOtp();
+  const otpExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+  await db.database.from("local_users")
+    .update({ otp_code: otp, otp_expires_at: otpExpiry })
+    .eq("id", user.id);
+
+  res.json({ requireOtp: true, email: email.toLowerCase(), devOtp: otp });
+});
+
+// POST /api/local-auth/verify-otp
+app.post("/api/local-auth/verify-otp", async (req, res) => {
+  const { email, otp } = req.body ?? {};
+  if (!email || !otp) return res.status(400).json({ error: "Email and OTP required" });
+
+  const { data: user } = await db.database
+    .from("local_users").select().eq("email", email.toLowerCase()).maybeSingle();
+
+  if (!user) return res.status(404).json({ error: "User not found" });
+  if (user.otp_code !== String(otp)) return res.status(401).json({ error: "Invalid verification code" });
+  if (new Date(user.otp_expires_at) < new Date()) return res.status(401).json({ error: "Code expired — request a new one" });
+
+  const token = generateToken();
+  const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days
+
+  await db.database.from("local_users")
+    .update({ verified: true, otp_code: null, otp_expires_at: null, session_token: token, token_expires_at: tokenExpiry })
+    .eq("id", user.id);
+
+  res.json({
+    accessToken: token,
+    user: { id: user.id, email: user.email, name: user.name ?? undefined },
+  });
+});
+
+// POST /api/local-auth/resend-otp
+app.post("/api/local-auth/resend-otp", async (req, res) => {
+  const { email } = req.body ?? {};
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  const { data: user } = await db.database
+    .from("local_users").select("id").eq("email", email.toLowerCase()).maybeSingle();
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  const otp = generateOtp();
+  const otpExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+  await db.database.from("local_users")
+    .update({ otp_code: otp, otp_expires_at: otpExpiry })
+    .eq("id", user.id);
+
+  res.json({ sent: true, devOtp: otp });
+});
+
+// GET /api/local-auth/me
+app.get("/api/local-auth/me", async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return res.status(401).json({ error: "Unauthorized" });
+  const token = auth.slice(7);
+
+  const { data: user } = await db.database
+    .from("local_users").select("id,email,name,token_expires_at")
+    .eq("session_token", token).maybeSingle();
+
+  if (!user) return res.status(401).json({ error: "Invalid or expired session" });
+  if (user.token_expires_at && new Date(user.token_expires_at) < new Date())
+    return res.status(401).json({ error: "Session expired — please sign in again" });
+
+  res.json({ user: { id: user.id, email: user.email, name: user.name ?? undefined } });
+});
+
+// POST /api/local-auth/signout
+app.post("/api/local-auth/signout", async (req, res) => {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) {
+    const token = auth.slice(7);
+    await db.database.from("local_users")
+      .update({ session_token: null, token_expires_at: null })
+      .eq("session_token", token);
+  }
+  res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════════════
 // ── GET /api/status ───────────────────────────────────────────────────────────
 app.get("/api/status", async (_req, res) => {
   const [statsRes, devicesRes, alertsRes] = await Promise.all([

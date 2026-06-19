@@ -6,6 +6,7 @@ import type { SystemStatus } from "../types";
 import { SalamandaLogo } from "./SalamandaLogo";
 import type { ActiveUser } from "../hooks/useSession";
 import type { Theme } from "../hooks/useTheme";
+import { usePlatform } from "../hooks/usePlatform";
 
 interface HeaderProps {
   status: SystemStatus | null;
@@ -38,6 +39,16 @@ export const Header = memo(function Header({
 }: HeaderProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { platform, isElectron, isMobile } = usePlatform();
+
+  const platformLabel: Record<string, string> = {
+    "electron-mac": "macOS",
+    "electron-win": "Windows",
+    "electron-linux": "Linux",
+    "capacitor-ios": "iOS",
+    "capacitor-android": "Android",
+    "web": "Web",
+  };
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -72,6 +83,15 @@ export const Header = memo(function Header({
         </span>
         <span className="hidden lg:block ml-4 px-2 py-1 text-[10px] font-mono bg-slate-800 rounded border border-slate-700 text-amber-400">
           v2.0.0
+        </span>
+        {/* Platform badge */}
+        <span className={cn(
+          "hidden lg:block ml-1 px-2 py-1 text-[10px] font-mono rounded border font-bold uppercase",
+          isElectron ? "bg-violet-500/10 border-violet-500/30 text-violet-400" :
+          isMobile ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" :
+          "bg-slate-800 border-slate-700 text-slate-500"
+        )}>
+          {platformLabel[platform] ?? "Web"}
         </span>
       </div>
 

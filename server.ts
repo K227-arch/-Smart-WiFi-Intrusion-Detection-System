@@ -3,7 +3,6 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import https from "https";
-import { execSync } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
 import * as ort from "onnxruntime-node";
@@ -2023,10 +2022,9 @@ Rules:
         engineActive = true;
         console.log(`✓ Live capture active on ${ACTIVE_IFACE} — capturing real network traffic`);
       } else {
-        console.warn(`⚠ Live capture unavailable on ${ACTIVE_IFACE} — running in simulator mode.`);
+        console.warn(`⚠ Live capture unavailable on ${ACTIVE_IFACE}.`);
         console.warn("  Install Npcap (Windows) or run: sudo npm run setup:capture (macOS/Linux)");
-        console.warn("  Simulator will generate synthetic traffic for demo purposes.");
-        startSimulator();
+        console.warn("  No simulator — only real captured traffic will appear.");
       }
     });
 
@@ -2242,130 +2240,141 @@ function setupLocalAuth(app: express.Express) {
   });
 
   console.log("✓ Local auth system ready");
+
+  // Register the extra routes (IP, Tools, System, Routing) within Express scope
+  registerExtendedRoutes(app);
 }
 
-// ── Simulator — generates synthetic WiFi + network traffic when libpcap is unavailable ──
-// Produces realistic-looking packets including occasional attack patterns so all
-// detection engines (signature, anomaly, ML) have data to work with.
-function startSimulator() {
-  // ── Seed with REAL devices from this machine's ARP table ─────────────────
-  const realDevices: Array<{ ip: string; mac: string }> = [];
-  try {
-    const arpOut = execSync("arp -a", { timeout: 5000, windowsHide: true }).toString();
-    const lines = arpOut.split("\n");
-    for (const line of lines) {
-      // Windows: "  192.168.1.5           bc-09-1b-fe-68-f7     dynamic"
-      const m = line.match(/(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})/i);
-      if (m) {
-        const ip = m[1];
-        const mac = m[2].replace(/-/g, ":").toUpperCase();
-        // Skip multicast/broadcast
-        if (!ip.startsWith("224.") && !ip.startsWith("239.") && ip !== "255.255.255.255") {
-          realDevices.push({ ip, mac });
-        }
-      }
-    }
-  } catch { /* ARP not available */ }
+// ── Tools API endpoints ───────────────────────────────────────────────────────
+// NOTE: These are at module scope but use `app` from startServer().
+// We call them after startServer() completes via registerExtendedRoutes(app).
 
-  // Fall back to synthetic MACs if ARP gave nothing
-  const fallbackMacs = [
-    "AA:BB:CC:11:22:33", "DE:AD:BE:EF:00:01", "11:22:33:44:55:66",
-    "CA:FE:BA:BE:00:01", "00:11:22:33:44:55", "FF:EE:DD:CC:BB:AA",
-  ];
-
-  // Build the working MAC/IP pools
-  const REAL_IPS  = realDevices.map(d => d.ip);
-  const REAL_MACS = realDevices.map(d => d.mac);
-
-  const MACS = REAL_MACS.length >= 3 ? REAL_MACS : fallbackMacs;
-  const IPS  = REAL_IPS.length  >= 3 ? REAL_IPS
-    : Array.from({ length: 8 }, (_, i) => `192.168.1.${10 + i}`);
-
-  // Prime the ARP table in the network analyzer with real entries
-  for (const d of realDevices) {
-    networkAnalyzer.processPacket({
-      timestamp: Date.now(), srcMac: d.mac, dstMac: "FF:FF:FF:FF:FF:FF",
-      etherType: 0x0806, interface: ACTIVE_IFACE, length: 42,
-      arpOp: 2, arpSenderIp: d.ip, arpSenderMac: d.mac,
-      arpTargetIp: IPS[0] ?? d.ip,
-    } as any);
+function parseRoutes(raw: string): Array<{ dest: string; gateway: string; iface: string; flags?: string }> {
+  const routes: Array<{ dest: string; gateway: string; iface: string; flags?: string }> = [];
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+    if (m && !line.startsWith("Routing") && !line.startsWith("Internet") && !line.startsWith("Destination"))
+      routes.push({ dest: m[1], gateway: m[2], flags: m[3], iface: m[4] });
   }
-
-  if (REAL_MACS.length > 0) {
-    console.log(`✓ Simulator seeded with ${REAL_MACS.length} real LAN device(s) from ARP table`);
-  }
-
-  const SSIDS = ["Enterprise_Secure_WiFi", "HomeNet_5G", "GuestWiFi", "IoT_Network"];
-  const CHANNELS = [1, 6, 11, 36, 40, 44, 48];
-  const KNOWN_BSSID = REAL_MACS[0] ?? "DE:AD:BE:EF:00:01";
-  const KNOWN_SSID = config.knownNetworks[0]?.ssid ?? "Enterprise_Secure_WiFi";
-  const COMMON_PORTS = [80, 443, 22, 53, 8080, 3389, 445, 21, 23, 25, 110, 143, 3306, 5432];
-
-  let tick = 0;
-
-  const interval = setInterval(() => {
-    tick++;
-    const mac = MACS[Math.floor(Math.random() * MACS.length)];
-    const ip  = IPS[Math.floor(Math.random() * IPS.length)];
-    const types: WiFiPacket["type"][] = ["data", "data", "data", "mgmt", "beacons", "deauth"];
-    const type = types[Math.floor(Math.random() * types.length)];
-    const channel = CHANNELS[Math.floor(Math.random() * CHANNELS.length)];
-    const signal = -40 - Math.random() * 50;
-    const srcPort = 1024 + Math.floor(Math.random() * 60000);
-    const dstPort = COMMON_PORTS[Math.floor(Math.random() * COMMON_PORTS.length)];
-
-    const packet: WiFiPacket = {
-      timestamp: Date.now(),
-      sourceMac: mac,
-      destMac: MACS[Math.floor(Math.random() * MACS.length)],
-      bssid: KNOWN_BSSID,
-      ssid: type === "beacons" ? SSIDS[Math.floor(Math.random() * SSIDS.length)] : undefined,
-      type,
-      signalStrength: signal,
-      channel,
-      srcPort,
-      dstPort,
-      protocol: Math.random() > 0.3 ? "tcp" : "udp",
-      srcIp: ip,
-      dstIp: IPS[Math.floor(Math.random() * IPS.length)],
-    };
-
-    // Inject attack patterns periodically
-    if (tick % 80 === 0) {
-      for (let i = 0; i < 8; i++) {
-        detectionEngine.processPacket({ ...packet, type: "deauth", sourceMac: MACS[0] });
-      }
-    }
-    if (tick % 120 === 0) {
-      detectionEngine.processPacket({
-        ...packet, type: "beacons",
-        ssid: KNOWN_SSID,
-        bssid: "BA:D0:BA:D0:BA:D0",
-        sourceMac: "BA:D0:BA:D0:BA:D0",
-      });
-    }
-    if (tick % 60 === 0) {
-      for (let p = 20; p < 40; p++) {
-        detectionEngine.processPacket({
-          ...packet, type: "data",
-          sourceMac: MACS[0],
-          dstPort: p,
-          srcIp: IPS[0] ?? ip,
-          dstIp: IPS[1] ?? ip,
-        });
-      }
-    }
-
-    detectionEngine.processPacket(packet);
-  }, 200); // 5 packets/sec baseline
-
-  // Clean up on process exit
-  process.on("SIGINT", () => { clearInterval(interval); process.exit(0); });
-  process.on("SIGTERM", () => { clearInterval(interval); process.exit(0); });
-
-  console.log("✓ Simulator started — generating synthetic traffic at 5 pkt/s");
-  engineActive = true;
+  return routes.slice(0, 100);
 }
+
+function registerExtendedRoutes(app: import("express").Express) {
+  // POST /api/tools/ping
+  app.post("/api/tools/ping", async (req, res) => {
+    const { host, count = 4 } = req.body ?? {};
+    if (!host) return res.status(400).json({ error: "host required" });
+    const safeHost = String(host).replace(/[^a-zA-Z0-9.\-_:]/g, "");
+    const safeCount = Math.min(Math.max(1, Number(count) || 4), 20);
+    try {
+      const { execSync } = await import("child_process");
+      const cmd = process.platform === "win32" ? `ping -n ${safeCount} ${safeHost}` : `ping -c ${safeCount} -W 2 ${safeHost}`;
+      const output = execSync(cmd, { timeout: 30000, windowsHide: true }).toString();
+      res.json({ output, host: safeHost, count: safeCount });
+    } catch (e: any) { res.json({ output: e.stdout?.toString() ?? e.message ?? "ping failed", host: safeHost, count: safeCount, error: true }); }
+  });
+
+  // POST /api/tools/traceroute
+  app.post("/api/tools/traceroute", async (req, res) => {
+    const { host } = req.body ?? {};
+    if (!host) return res.status(400).json({ error: "host required" });
+    const safeHost = String(host).replace(/[^a-zA-Z0-9.\-_:]/g, "");
+    try {
+      const { execSync } = await import("child_process");
+      const cmd = process.platform === "win32" ? `tracert -d -h 15 ${safeHost}` : `traceroute -n -m 15 -w 2 ${safeHost}`;
+      const output = execSync(cmd, { timeout: 45000, windowsHide: true }).toString();
+      res.json({ output, host: safeHost });
+    } catch (e: any) { res.json({ output: e.stdout?.toString() ?? e.message ?? "traceroute failed", host: safeHost, error: true }); }
+  });
+
+  // POST /api/tools/ipscan
+  app.post("/api/tools/ipscan", async (req, res) => {
+    const { range } = req.body ?? {};
+    if (!range) return res.status(400).json({ error: "range required" });
+    try {
+      const { execSync } = await import("child_process");
+      const arpOut = execSync("arp -a", { timeout: 5000, windowsHide: true }).toString();
+      const results: Array<{ ip: string; mac: string; hostname?: string }> = [];
+      for (const line of arpOut.split("\n")) {
+        const m = line.match(/(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})/i);
+        if (m) { const ip = m[1]; const mac = m[2].replace(/-/g, ":").toUpperCase(); if (!ip.startsWith("224.") && !ip.startsWith("239.") && ip !== "255.255.255.255") results.push({ ip, mac }); }
+      }
+      for (const [, d] of devices) if (d.ipAddress && !results.find(r => r.ip === d.ipAddress)) results.push({ ip: d.ipAddress, mac: d.mac, hostname: d.hostname });
+      res.json({ results, range });
+    } catch { res.json({ results: [...devices.values()].filter(d => d.ipAddress).map(d => ({ ip: d.ipAddress!, mac: d.mac, hostname: d.hostname })), range }); }
+  });
+
+  // POST /api/tools/netwatch
+  app.post("/api/tools/netwatch", async (req, res) => {
+    const { hosts } = req.body ?? {};
+    if (!Array.isArray(hosts) || !hosts.length) return res.status(400).json({ error: "hosts array required" });
+    const { execSync } = await import("child_process");
+    const results: Array<{ host: string; up: boolean; rtt?: number }> = [];
+    for (const h of hosts.slice(0, 20)) {
+      const sh = String(h).replace(/[^a-zA-Z0-9.\-_:]/g, "");
+      try { const t = Date.now(); execSync(process.platform === "win32" ? `ping -n 1 -w 1000 ${sh}` : `ping -c 1 -W 1 ${sh}`, { timeout: 3000, windowsHide: true }); results.push({ host: sh, up: true, rtt: Date.now() - t }); }
+      catch { results.push({ host: sh, up: false }); }
+    }
+    res.json({ results });
+  });
+
+  // GET /api/tools/bandwidth
+  app.get("/api/tools/bandwidth", (_req, res) => {
+    res.json({ packetsPerSec: Math.round(totalPacketsProcessed / Math.max(1, process.uptime())), buckets: trafficBuckets.slice(-20) });
+  });
+
+  // GET /api/ip/addresses
+  app.get("/api/ip/addresses", (_req, res) => {
+    const result: any[] = [];
+    for (const [name, addrs] of Object.entries(os.networkInterfaces())) for (const a of (addrs ?? [])) result.push({ iface: name, family: a.family, address: a.address, netmask: a.netmask ?? "", mac: a.mac, internal: a.internal });
+    res.json(result);
+  });
+
+  // GET /api/ip/routes
+  app.get("/api/ip/routes", async (_req, res) => {
+    try { const { execSync } = await import("child_process"); const cmd = process.platform === "win32" ? "route print" : process.platform === "darwin" ? "netstat -rn" : "ip route show"; const raw = execSync(cmd, { timeout: 5000, windowsHide: true }).toString(); res.json({ raw, routes: parseRoutes(raw) }); }
+    catch (e: any) { res.json({ raw: e.message ?? "failed", routes: [] }); }
+  });
+
+  // GET /api/ip/dhcp
+  app.get("/api/ip/dhcp", (_req, res) => {
+    res.json([...devices.values()].filter(d => d.ipAddress).map(d => ({ mac: d.mac, ip: d.ipAddress, hostname: d.hostname ?? "", firstSeen: d.firstSeen, lastSeen: d.lastSeen, status: d.status })));
+  });
+
+  // GET /api/ip/dns
+  app.get("/api/ip/dns", async (_req, res) => {
+    try {
+      const { execSync } = await import("child_process");
+      let servers: string[] = [];
+      if (process.platform === "win32") { const o = execSync("ipconfig /all", { timeout: 5000, windowsHide: true }).toString(); servers = (o.match(/DNS Servers.*?:\s*([\d.]+)/g) ?? []).map((l: string) => l.replace(/.*:\s*/, "").trim()); }
+      else if (process.platform === "darwin") { const o = execSync("scutil --dns", { timeout: 5000 }).toString(); servers = [...new Set((o.match(/nameserver\[.\]\s*:\s*([\d.]+)/g) ?? []).map((l: string) => l.replace(/.*:\s*/, "").trim()))]; }
+      else { const o = fs.existsSync("/etc/resolv.conf") ? fs.readFileSync("/etc/resolv.conf", "utf-8") : ""; servers = (o.match(/^nameserver\s+([\d.]+)/gm) ?? []).map((l: string) => l.replace("nameserver ", "").trim()); }
+      res.json({ servers, recentQueries: networkAnalyzer.getDnsRecords().slice(0, 50) });
+    } catch (e: any) { res.json({ servers: [], recentQueries: [], error: e.message }); }
+  });
+
+  // GET /api/ip/firewall
+  app.get("/api/ip/firewall", (_req, res) => { res.json(networkAnalyzer.getFlows()); });
+
+  // GET /api/system/resources
+  app.get("/api/system/resources", (_req, res) => {
+    const t = os.totalmem(), f = os.freemem(), u = t - f, cpus = os.cpus(), la = os.loadavg();
+    res.json({ uptime: process.uptime(), osUptime: os.uptime(), platform: process.platform, arch: process.arch, nodeVersion: process.version, cpuModel: cpus[0]?.model ?? "unknown", cpuCount: cpus.length, loadAvg1m: la[0], loadAvg5m: la[1], loadAvg15m: la[2], totalMemMB: Math.round(t / 1024 / 1024), usedMemMB: Math.round(u / 1024 / 1024), freeMemMB: Math.round(f / 1024 / 1024), memUsedPct: Math.round((u / t) * 100), processMemMB: Math.round(process.memoryUsage().rss / 1024 / 1024) });
+  });
+
+  // GET /api/system/clock
+  app.get("/api/system/clock", (_req, res) => {
+    const now = new Date(); res.json({ iso: now.toISOString(), unix: Math.floor(now.getTime() / 1000), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, utcOffset: -now.getTimezoneOffset(), local: now.toLocaleString() });
+  });
+
+  // GET /api/routing/table
+  app.get("/api/routing/table", async (_req, res) => {
+    try { const { execSync } = await import("child_process"); const cmd = process.platform === "win32" ? "route print -4" : process.platform === "darwin" ? "netstat -rn -f inet" : "ip route show"; const raw = execSync(cmd, { timeout: 5000, windowsHide: true }).toString(); res.json({ routes: parseRoutes(raw), raw }); }
+    catch (e: any) { res.json({ routes: [], raw: e.message ?? "failed" }); }
+  });
+}
+
+// POST /api/tools/traceroute
 
 startServer();
 loadOnnxModel();

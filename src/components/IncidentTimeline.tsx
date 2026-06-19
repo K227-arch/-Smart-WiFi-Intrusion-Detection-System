@@ -5,6 +5,7 @@ import { cn } from "../lib/utils";
 import { ALERT_TYPE_META } from "../lib/alertMeta";
 import type { Alert } from "../types";
 
+
 interface IncidentTimelineProps {
   alerts: Alert[];
   onExport: () => void;
