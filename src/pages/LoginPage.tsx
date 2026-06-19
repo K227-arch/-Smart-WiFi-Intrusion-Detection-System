@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { AlertCircle, Eye, EyeOff, Loader2, Mail, ShieldCheck } from "lucide-react";
-import { localAuth } from "../lib/insforge";
+import { insforge, localAuth } from "../lib/insforge";
 import { SalamandaLogo } from "../components/SalamandaLogo";
 import { cn } from "../lib/utils";
 
@@ -32,17 +32,26 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const result = await localAuth.signUp(email, password, name || undefined);
-        if (result.requireEmailVerification) {
-          setScreen("verify");
-        } else {
-          // No verification required — sign in immediately
-          await localAuth.signIn(email, password);
+        const { data, error: err } = await insforge.auth.signUp({ email, password, name: name || undefined });
+        if (err) throw new Error(err.message ?? "Sign up failed");
+        // Whether or not verification is required, attempt immediate sign-in.
+        // If email_verified is needed, InsForge will return 401 and we show a
+        // clear message instead of leaving the user stuck on a broken OTP screen.
+        const { data: signInData, error: signInErr } = await insforge.auth.signInWithPassword({ email, password });
+        if (signInErr) {
+          // Sign-up succeeded but sign-in blocked — most likely email not verified
+          if (data?.requireEmailVerification) {
+            setScreen("verify");
+          } else {
+            throw new Error(signInErr.message ?? "Sign in failed after sign up");
+          }
+        } else if (signInData?.accessToken) {
           onLogin();
         }
       } else {
-        await localAuth.signIn(email, password);
-        onLogin();
+        const { data, error: err } = await insforge.auth.signInWithPassword({ email, password });
+        if (err) throw new Error(err.message ?? "Invalid email or password");
+        if (data?.accessToken) onLogin();
       }
     } catch (err: any) {
       setError(err.message ?? "Authentication failed. Please try again.");
@@ -56,8 +65,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     setError(null);
     setLoading(true);
     try {
-      await localAuth.verifyEmail(email, otp);
-      onLogin();
+      const { data, error: err } = await insforge.auth.verifyEmail({ email, otp });
+      if (err) throw new Error(err.message ?? "Verification failed");
+      if (data?.accessToken) onLogin();
     } catch (err: any) {
       setError(err.message ?? "Verification failed.");
     } finally {
