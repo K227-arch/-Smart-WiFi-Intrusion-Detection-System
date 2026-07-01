@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(VISUAL_STUDIO_VERSION=2022 npm install *)",
+      "Bash(node *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(npx node-gyp *)"
+    ]
+  }
+}

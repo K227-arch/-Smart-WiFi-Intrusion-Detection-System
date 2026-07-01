@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Salamanda brand colors (from logo) ── */
+  --color-brand: #F59E0B;
+  --color-brand-dark: #D97706;
+  --color-brand-light: #FCD34D;
+}
+
+/* ── Dark mode (default) ── */
+:root {
+  background-color: #020617;
+  color: #cbd5e1;
+  color-scheme: dark;
+}
+
+/* ── Light mode ── */
+:root.light {
+  background-color: #f8fafc;
+  color: #1e293b;
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Light mode overrides for components that use hardcoded dark classes ── */
+:root.light .bg-slate-950 { background-color: #f1f5f9 !important; }
+:root.light .bg-slate-900 { background-color: #f8fafc !important; }
+:root.light .bg-slate-900\/50 { background-color: rgba(248,250,252,0.95) !important; }
+:root.light .bg-slate-900\/30 { background-color: rgba(241,245,249,0.8) !important; }
+:root.light .bg-slate-900\/95 { background-color: rgba(248,250,252,0.98) !important; }
+:root.light .bg-slate-800 { background-color: #e2e8f0 !important; }
+:root.light .bg-slate-800\/30 { background-color: rgba(226,232,240,0.5) !important; }
+:root.light .bg-slate-800\/20 { background-color: rgba(226,232,240,0.3) !important; }
+:root.light .bg-slate-950\/30 { background-color: rgba(241,245,249,0.6) !important; }
+:root.light .bg-slate-950\/50 { background-color: rgba(241,245,249,0.8) !important; }
+:root.light .bg-slate-950\/60 { background-color: rgba(241,245,249,0.9) !important; }
+
+:root.light .border-slate-800 { border-color: #cbd5e1 !important; }
+:root.light .border-slate-800\/50 { border-color: rgba(203,213,225,0.6) !important; }
+:root.light .border-slate-700 { border-color: #94a3b8 !important; }
+
+:root.light .text-slate-300 { color: #334155 !important; }
+:root.light .text-slate-400 { color: #475569 !important; }
+:root.light .text-slate-500 { color: #64748b !important; }
+:root.light .text-slate-600 { color: #475569 !important; }
+:root.light .text-white { color: #0f172a !important; }
+:root.light .text-slate-200 { color: #1e293b !important; }
+
+:root.light .hover\:bg-slate-800:hover { background-color: #e2e8f0 !important; }
+:root.light .hover\:bg-slate-700:hover { background-color: #cbd5e1 !important; }
+
+:root.light .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.5) !important; }
+:root.light .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.8) !important; }

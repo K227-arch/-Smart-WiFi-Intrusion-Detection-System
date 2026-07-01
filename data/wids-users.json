@@ -1,0 +1,18 @@
+[
+  {
+    "id": "1b949060c12cdfe929e32536f6b95a71",
+    "email": "admin@wids.local",
+    "name": "Admin",
+    "passwordHash": "82b980ac36bdce9075b2fa6acf2ae0f3b2ce8f2cb1065304aadbabefc4a9d2824d69caf3c466ab905c40fb62b199b3ebb0e75b63c7a76682db2b3edf79b91603",
+    "passwordSalt": "4cff371b8eca9d55159f35455c0fbb0a",
+    "createdAt": 1780338232187
+  },
+  {
+    "id": "3809bcf68207f536f8396a639b94a2f4",
+    "email": "dreagan713@gmail.com",
+    "name": "danny",
+    "passwordHash": "51cf6c8f8347bf10f66f64d16f8a58f3e84d07dc4b9093fc99c4e647f2ac4115e267b69dff0eb4af99982c04846b15e3642e69d57a1c6872b2400ceeb84879e2",
+    "passwordSalt": "d65c496ccef9fb5c81c25f712d68ce1a",
+    "createdAt": 1782674221135
+  }
+]
