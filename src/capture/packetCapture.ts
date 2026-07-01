@@ -166,12 +166,52 @@ export class PacketCaptureEngine extends EventEmitter {
   }
 
   async start(): Promise<boolean> {
+    // On Windows without Npcap, skip capture entirely to avoid native assertion crashes
+    if (process.platform === "win32") {
+      try {
+        const { createRequire } = await import("module");
+        const require = createRequire(import.meta.url);
+        const capModule = require("cap");
+        const Cap = capModule.Cap ?? capModule.default?.Cap ?? capModule;
+        const device = Cap.findDevice(this.iface);
+        // Validate the device string before opening
+        if (!device || !device.includes("\\Device\\")) {
+          console.warn(`⚠ Live capture unavailable: interface "${this.iface}" not found as a valid pcap device.`);
+          this.pcapAvailable = false;
+          return false;
+        }
+        const c = new Cap();
+        const linkType = c.open(device, this.filter || "ip or arp", 65535, this.buffer);
+        this.cap = c;
+        this.active = true;
+        this.pcapAvailable = true;
+        this.stats.isLive = true;
+        c.on("packet", (nbytes: number, trunc: boolean) => {
+          if (!this.active) return;
+          this.stats.packetsReceived++;
+          try {
+            const raw = this.buffer.slice(0, nbytes);
+            const parsed = parseEthernetFrame(raw, this.iface);
+            if (parsed) {
+              parsed.rawHex = raw.slice(0, 32).toString("hex");
+              this.emit("packet", parsed);
+            }
+          } catch { /* malformed */ }
+        });
+        console.log(`✓ Live capture started on ${this.iface} (${linkType}) filter="${this.filter}"`);
+        return true;
+      } catch (e: any) {
+        console.warn(`⚠ Live capture unavailable (${e.message}).`);
+        this.pcapAvailable = false;
+        return false;
+      }
+    }
+
+    // Non-Windows path
     try {
-      // Use createRequire to load the native CJS addon reliably under tsx/ESM
       const { createRequire } = await import("module");
       const require = createRequire(import.meta.url);
       const capModule = require("cap");
-      // Handle both direct export and default-wrapped export
       const Cap = capModule.Cap ?? capModule.default?.Cap ?? capModule;
       const c = new Cap();
       const device = Cap.findDevice(this.iface) ?? this.iface;
