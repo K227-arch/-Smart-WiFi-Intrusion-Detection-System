@@ -99,6 +99,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
 
   // Connect state
   const [connectingTo, setConnectingTo] = useState<string | null>(null);
+  const [connectedSsid, setConnectedSsid] = useState<string | null>(null);
   const [connectMsg, setConnectMsg] = useState<{ ssid: string; msg: string; ok: boolean } | null>(null);
   const [passwordPrompt, setPasswordPrompt] = useState<{ ssid: string; bssid: string } | null>(null);
   const [passwordInput, setPasswordInput] = useState("");
@@ -117,7 +118,11 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
       const res = await fetch("/api/network/scan-wifi");
       const data = await res.json();
       if (data.error) setScanError(data.error);
-      setScannedNetworks(data.networks ?? []);
+      const nets: ScannedNetwork[] = data.networks ?? [];
+      setScannedNetworks(nets);
+      // Detect currently connected network from scan results
+      const connected = nets.find(n => n.security === "Connected");
+      if (connected) setConnectedSsid(connected.ssid);
     } catch {
       setScanError("Failed to scan networks");
     }
@@ -169,6 +174,7 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
       const data = await res.json();
       if (data.success) {
         setConnectMsg({ ssid, msg: data.message, ok: true });
+        setConnectedSsid(ssid);
         // Refresh networks after connecting
         setTimeout(() => { scanWifi(); fetchProfiles(); }, 3000);
       } else {
@@ -277,6 +283,88 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
+
+        {/* ── Connected Network ── */}
+        {connectedSsid && (
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Wifi className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Connected Network</h3>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-3 bg-emerald-500/5 border border-emerald-500/30 rounded-lg">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <Wifi className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <span className="text-sm font-bold text-white block">{connectedSsid}</span>
+                <span className="text-[9px] text-emerald-400/70 font-mono">SALAMANDA IDS is monitoring this network</span>
+              </div>
+              <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase">
+                Connected
+              </span>
+            </div>
+          </section>
+        )}
+
+        {/* ── Known Networks (Previously Connected + Manual) ── */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Signal className="w-4 h-4 text-amber-500" />
+              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Known Networks</h3>
+            </div>
+            <button
+              onClick={fetchProfiles}
+              disabled={profilesLoading}
+              className="p-1.5 text-slate-500 hover:text-amber-400 transition-colors"
+              title="Refresh saved profiles"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", profilesLoading && "animate-spin")} />
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500">
+            Networks previously connected to on this device. These are monitored by SALAMANDA IDS. Click connect to reconnect.
+          </p>
+
+          {/* Saved profiles list */}
+          {savedProfiles.length > 0 && (
+            <div className="space-y-1.5">
+              {savedProfiles.map((profile) => {
+                const isConnecting = connectingTo === profile.ssid;
+                return (
+                  <div
+                    key={profile.ssid}
+                    className="flex items-center gap-3 px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-lg hover:border-slate-700 transition-colors"
+                  >
+                    <Wifi className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[11px] font-bold text-white truncate block">{profile.ssid}</span>
+                      <span className="text-[9px] text-slate-500">{profile.security}</span>
+                    </div>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-bold uppercase">
+                      Saved
+                    </span>
+                    <button
+                      onClick={() => connectToNetwork(profile.ssid)}
+                      disabled={isConnecting}
+                      className={cn(
+                        "flex items-center gap-1 px-2 py-1 rounded text-[9px] font-bold transition-colors",
+                        isConnecting
+                          ? "bg-slate-800 text-slate-500 cursor-wait"
+                          : "bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 text-violet-400"
+                      )}
+                    >
+                      <Link2 className="w-3 h-3" />
+                      {isConnecting ? "..." : "Connect"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {savedProfiles.length === 0 && !profilesLoading && (
+            <p className="text-[10px] text-slate-600 italic">No saved WiFi profiles found.</p>
+          )}
+        </section>
 
         {/* ── Available WiFi Networks ── */}
         <section className="space-y-4">
@@ -395,7 +483,11 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
                   </div>
                   <span className="text-[9px] text-slate-400 font-mono shrink-0">{net.signal}%</span>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {net.security !== "Connected" && (
+                    {net.security === "Connected" || connectedSsid === net.ssid ? (
+                      <span className="flex items-center gap-1 px-2 py-1 text-[9px] font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 rounded">
+                        <CheckCircle2 className="w-3 h-3" /> Connected
+                      </span>
+                    ) : (
                       <button
                         onClick={() => handleConnectClick(net)}
                         disabled={isConnecting}
@@ -427,121 +519,6 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
                 </div>
               );
             })}
-          </div>
-        </section>
-
-        {/* ── Known Networks (Previously Connected + Manual) ── */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Signal className="w-4 h-4 text-amber-500" />
-              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest">Known Networks</h3>
-            </div>
-            <button
-              onClick={fetchProfiles}
-              disabled={profilesLoading}
-              className="p-1.5 text-slate-500 hover:text-amber-400 transition-colors"
-              title="Refresh saved profiles"
-            >
-              <RefreshCw className={cn("w-3.5 h-3.5", profilesLoading && "animate-spin")} />
-            </button>
-          </div>
-          <p className="text-[10px] text-slate-500">
-            Networks previously connected to on this device. These are monitored by SALAMANDA IDS. Click connect to reconnect.
-          </p>
-
-          {/* Saved profiles list */}
-          {savedProfiles.length > 0 && (
-            <div className="space-y-1.5">
-              {savedProfiles.map((profile) => {
-                const isConnecting = connectingTo === profile.ssid;
-                return (
-                  <div
-                    key={profile.ssid}
-                    className="flex items-center gap-3 px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-lg hover:border-slate-700 transition-colors"
-                  >
-                    <Wifi className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-[11px] font-bold text-white truncate block">{profile.ssid}</span>
-                      <span className="text-[9px] text-slate-500">{profile.security}</span>
-                    </div>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-bold uppercase">
-                      Saved
-                    </span>
-                    <button
-                      onClick={() => connectToNetwork(profile.ssid)}
-                      disabled={isConnecting}
-                      className={cn(
-                        "flex items-center gap-1 px-2 py-1 rounded text-[9px] font-bold transition-colors",
-                        isConnecting
-                          ? "bg-slate-800 text-slate-500 cursor-wait"
-                          : "bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 text-violet-400"
-                      )}
-                    >
-                      <Link2 className="w-3 h-3" />
-                      {isConnecting ? "..." : "Connect"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {savedProfiles.length === 0 && !profilesLoading && (
-            <p className="text-[10px] text-slate-600 italic">No saved WiFi profiles found.</p>
-          )}
-
-          {/* Manually configured known networks */}
-          <div className="mt-4 pt-4 border-t border-slate-800 space-y-3">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Manually Configured (IDS Monitoring)</span>
-            <div className="space-y-2">
-              {networks.map((n, i) => (
-                <div key={i} className="flex items-center gap-3 p-3 bg-slate-950 border border-slate-800 rounded-lg">
-                  <div className="flex-1 grid grid-cols-3 gap-3 text-[11px] font-mono">
-                    <span className="text-emerald-400">{n.ssid}</span>
-                    <span className="text-amber-400">{n.bssid}</span>
-                    <span className="text-slate-400">Ch {n.channel}</span>
-                  </div>
-                  <button onClick={() => removeNetwork(i)} className="p-1 text-slate-600 hover:text-rose-400 transition-colors">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <input
-                value={newNetwork.ssid}
-                onChange={(e) => setNewNetwork((p) => ({ ...p, ssid: e.target.value }))}
-                placeholder="SSID"
-                className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500 placeholder:text-slate-600"
-              />
-              <input
-                value={newNetwork.bssid}
-                onChange={(e) => setNewNetwork((p) => ({ ...p, bssid: e.target.value.toUpperCase() }))}
-                placeholder="BSSID (AA:BB:CC:DD:EE:FF)"
-                className={cn(
-                  "bg-slate-950 border rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none placeholder:text-slate-600",
-                  newNetwork.bssid && !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(newNetwork.bssid)
-                    ? "border-rose-500/60 focus:border-rose-500"
-                    : "border-slate-700 focus:border-amber-500"
-                )}
-              />
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  value={newNetwork.channel}
-                  onChange={(e) => setNewNetwork((p) => ({ ...p, channel: Number(e.target.value) }))}
-                  min={1} max={165}
-                  placeholder="Ch"
-                  className="w-20 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500"
-                />
-                <button
-                  onClick={addNetwork}
-                  className="flex-1 flex items-center justify-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded text-[10px] font-bold text-amber-400 transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add
-                </button>
-              </div>
-            </div>
           </div>
         </section>
 

@@ -34,24 +34,36 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       if (mode === "signup") {
         const { data, error: err } = await insforge.auth.signUp({ email, password, name: name || undefined });
         if (err) throw new Error(err.message ?? "Sign up failed");
-        // Whether or not verification is required, attempt immediate sign-in.
-        // If email_verified is needed, InsForge will return 401 and we show a
-        // clear message instead of leaving the user stuck on a broken OTP screen.
+        
+        // If email verification is required, show OTP screen
+        if (data?.requireEmailVerification) {
+          setScreen("verify");
+          setLoading(false);
+          return;
+        }
+        
+        // No verification required — sign in immediately with the credentials
         const { data: signInData, error: signInErr } = await insforge.auth.signInWithPassword({ email, password });
-        if (signInErr) {
-          // Sign-up succeeded but sign-in blocked — most likely email not verified
-          if (data?.requireEmailVerification) {
-            setScreen("verify");
-          } else {
-            throw new Error(signInErr.message ?? "Sign in failed after sign up");
-          }
-        } else if (signInData?.accessToken) {
+        if (signInErr) throw new Error(signInErr.message ?? "Account created but sign in failed. Please sign in manually.");
+        if (signInData?.accessToken) {
           onLogin();
+        } else {
+          // Fallback: account created, ask user to sign in
+          setMode("signin");
+          setError(null);
+          setScreen("credentials");
+          // Show success message briefly
+          setError("Account created successfully! Please sign in.");
         }
       } else {
         const { data, error: err } = await insforge.auth.signInWithPassword({ email, password });
         if (err) throw new Error(err.message ?? "Invalid email or password");
-        if (data?.accessToken) onLogin();
+        if (data?.accessToken) {
+          onLogin();
+        } else if (data?.requireOtp) {
+          // OTP required for sign-in (2FA)
+          setScreen("verify");
+        }
       }
     } catch (err: any) {
       setError(err.message ?? "Authentication failed. Please try again.");

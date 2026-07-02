@@ -28,6 +28,14 @@ export function DevicesTab({ devices, onSelectDevice, onUpdateStatus }: DevicesT
         (d.hostname ?? "").toLowerCase().includes(q) ||
         (d.ssid ?? "").toLowerCase().includes(q)
       );
+    })
+    .sort((a, b) => {
+      // Known/trusted first, then unknown, then blocked
+      const order: Record<string, number> = { trusted: 0, unknown: 1, blocked: 2 };
+      const diff = (order[a.status] ?? 1) - (order[b.status] ?? 1);
+      if (diff !== 0) return diff;
+      // Within same status, most recently seen first
+      return b.lastSeen - a.lastSeen;
     });
 
   const filterCounts: Record<FilterStatus, number> = {
