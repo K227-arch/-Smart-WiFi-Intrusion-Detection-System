@@ -1,14 +1,6 @@
 {
-  "knownNetworks": [
-    {
-      "ssid": "UCC-TESTBED",
-      "bssid": "48:3A:02:61:90:45",
-      "channel": 161
-    }
-  ],
-  "trustedMacs": [
-    "68:FE:F7:15:BC:A7"
-  ],
+  "knownNetworks": [],
+  "trustedMacs": [],
   "deauthThreshold": 5,
   "deauthWindowMs": 3000,
   "dedupWindowMs": 10000
