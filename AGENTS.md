@@ -1,133 +1,63 @@
 ---
-description: Instructions building apps with MCP
+description: Repo-specific guidance for SALAMANDA WIDS
 globs: *
 alwaysApply: true
 ---
 
-# InsForge SDK Documentation - Overview
+# SALAMANDA WIDS — Agent Instructions
 
-## What is InsForge?
+Project: **Smart Adaptive Local Area Monitoring And Network Defense Architecture** (v2, MIT).
+`package.json` name `react-example` is a template artifact — ignore it.
 
-Backend-as-a-service (BaaS) platform providing:
+## Commands
 
-- **Database**: PostgreSQL with PostgREST API
-- **Authentication**: Email/password + OAuth (Google, GitHub)
-- **Storage**: File upload/download
-- **AI**: OpenRouter key provisioning and model catalog for direct OpenAI-compatible integrations
-- **Functions**: Serverless function deployment
-- **Realtime**: WebSocket pub/sub (database + client events)
+| Command | Action |
+|---------|--------|
+| `npm run dev` | Start full server (Express + Vite SPA) on `:3000` via `tsx server.ts` |
+| `npm run build` | Vite frontend build |
+| `npm run build:server` | esbuild server bundle → `dist/server.cjs` |
+| `npm run lint` | `tsc --noEmit` (no ESLint/Prettier) |
+| `npm run clean` | Remove `dist/` and `server.js` |
 
-## Installation
+No tests exist (no test framework, zero test files).
 
-The following is a step-by-step guide to installing and using the InsForge TypeScript SDK for Web applications. If you are building other types of applications, please refer to:
-- [Swift SDK documentation](/sdks/swift/overview) for iOS, macOS, tvOS, and watchOS applications.
-- [Kotlin SDK documentation](/sdks/kotlin/overview) for Android applications.
-- [REST API documentation](/sdks/rest/overview) for direct HTTP API access.
+Production requires **both** builds: `npm run build` then `npm run build:server`.
 
-### 🚨 CRITICAL: Follow these steps in order
+## Architecture — Non-Obvious
 
-### Step 1: Download Template
+- **Two Express apps**: `server.ts` (full 2377-line app for local/Docker) vs `api/index.ts` (lightweight Vercel serverless stub).
+- **Monolithic**: Express serves the Vite-built SPA + all API endpoints on one port.
+- **Three parallel detection pipelines**: Signature (Snort rules + NetworkAnalyzer) → Statistical Anomaly (Welford online, 3.5σ) → ML Scoring (3 ONNX models).
+- **Auth is self-contained** (scrypt + 2FA OTP, JSON file sessions in `data/`) — NOT InsForge auth.
+- **Realtime via SSE** at `/api/stream`.
+- **Simulator fallback**: when `cap` native module unavailable, auto-generates 5 pkt/s synthetic traffic.
+- **ML training**: Python scripts in `ml/` (scikit-learn → ONNX export).
+- **10 dashboard tabs** in `src/tabs/`.
 
-Use the `download-template` MCP tool to create a new project with your backend URL and anon key pre-configured.
+## Gotchas
 
-### Step 2: Install SDK
+- `@/*` path alias maps to **project root** (`./*`), not `src/*`.
+- Tailwind **v4** with `@tailwindcss/vite` plugin — no `tailwind.config.js`, no PostCSS config.
+- `onnxruntime-node` and `cap` are `optionalDependencies` — app runs without them (simulator mode).
+- `data/*.json` for persistence (config, alerts, users, sessions, rules).
+- `CAPTURE_IFACE` env var selects network interface; `CAPTURE_FILTER` for BPF filter.
+- `GEMINI_API_KEY` required for the terminal AI agent (`/api/terminal/ai`).
 
-```bash
-npm install @insforge/sdk@latest
-```
+## Security
 
-### Step 3: Create SDK Client
+- Hardcoded InsForge anon key + Gemini API fallback key in `server.ts` and `api/index.ts`.
+- `/api/terminal/exec` has **no command whitelist** (any shell command if authenticated).
+- 2FA OTP printed to both UI and server console on every login.
 
-You must create a client instance using `createClient()` with your base URL and anon key:
+## InsForge Integration
 
-```javascript
-import { createClient } from '@insforge/sdk';
+- Backend URL: `https://bh9n4s8r.us-east.insforge.app`.
+- `@insforge/sdk` for optional PostgreSQL sync (alerts, devices, traffic_buckets, detection_stats, user_sessions, engine_config).
+- All DB writes are fire-and-forget with silent error handling.
+- Before editing InsForge integration code, call the `fetch-docs` or `fetch-sdk-docs` MCP tool.
 
-const client = createClient({
-  baseUrl: 'https://your-app.region.insforge.app',  // Your InsForge backend URL
-  anonKey: 'your-anon-key-here'       // Get this from backend metadata
-});
+## Docker
 
-```
-
-**API BASE URL**: Your API base URL is `https://your-app.region.insforge.app`.
-
-## Getting Detailed Documentation
-
-### 🚨 CRITICAL: Always Fetch Documentation Before Writing Code
-
-InsForge provides official SDKs and REST APIs, use them to interact with InsForge services from your application code.
-
-- [TypeScript SDK](/sdks/typescript/overview) - JavaScript/TypeScript
-- [Swift SDK](/sdks/swift/overview) - iOS, macOS, tvOS, and watchOS
-- [Kotlin SDK](/sdks/kotlin/overview) - Android and Kotlin Multiplatform
-- [REST API](/sdks/rest/overview) - Direct HTTP API access
-
-Before writing or editing any InsForge integration code, you **MUST** call the `fetch-docs` or `fetch-sdk-docs` MCP tool to get the latest SDK documentation. This ensures you have accurate, up-to-date implementation patterns.
-
-### Use the InsForge `fetch-docs` MCP tool to get specific SDK documentation:
-
-Available documentation types:
-
-- `"instructions"` - Essential backend setup (START HERE)
-- `"real-time"` - Real-time pub/sub (database + client events) via WebSockets
-- `"db-sdk-typescript"` - Database operations with TypeScript SDK
-- **Authentication** - Choose based on implementation:
-  - `"auth-sdk-typescript"` - TypeScript SDK methods for custom auth flows
-  - `"auth-components-react"` - Pre-built auth UI for React+Vite (singlepage App)
-  - `"auth-components-react-router"` - Pre-built auth UI for React(Vite+React Router) (Multipage App)
-  - `"auth-components-nextjs"` - Pre-built auth UI for Nextjs (SSR App)
-- `"storage-sdk"` - File storage operations
-- `"functions-sdk"` - Serverless functions invocation
-- `"ai-integration-sdk"` - AI integration with the provisioned OpenRouter key and OpenAI SDK
-- `"real-time"` - Real-time pub/sub (database + client events) via WebSockets
-- `"deployment"` - Deploy frontend applications via MCP tool
-
-These documentations are mostly for TypeScript SDK. For other languages, you can also use `fetch-sdk-docs` mcp tool to get specific documentation.
-
-### Use the InsForge `fetch-sdk-docs` MCP tool to get specific SDK documentation
-
-You can fetch sdk documentation using the `fetch-sdk-docs` MCP tool with specific feature type and language.
-
-Available feature types:
-- db - Database operations
-- storage - File storage operations
-- functions - Serverless functions invocation
-- auth - User authentication
-- ai - AI integration with the provisioned OpenRouter key and OpenAI SDK
-- realtime - Real-time pub/sub (database + client events) via WebSockets
-
-Available languages:
-- typescript - JavaScript/TypeScript SDK
-- swift - Swift SDK (for iOS, macOS, tvOS, and watchOS)
-- kotlin - Kotlin SDK (for Android and JVM applications)
-- rest-api - REST API
-
-## When to Use SDK vs MCP Tools
-
-### Always SDK for Application Logic:
-
-- Authentication (register, login, logout, profiles)
-- Database CRUD (select, insert, update, delete)
-- Storage operations (upload, download files)
-- AI integration via the provisioned OpenRouter key with the OpenAI SDK or OpenRouter HTTP API
-- Serverless function invocation
-
-### Use MCP Tools for Infrastructure:
-
-- Project scaffolding (`download-template`) - Download starter templates with InsForge integration
-- Backend setup and metadata (`get-backend-metadata`)
-- Database schema management (`run-raw-sql`, `get-table-schema`)
-- Storage bucket creation (`create-bucket`, `list-buckets`, `delete-bucket`)
-- Serverless function deployment (`create-function`, `update-function`, `delete-function`)
-- Frontend deployment (`create-deployment`) - Deploy frontend apps to InsForge hosting
-
-## Important Notes
-
-- For auth: use `auth-sdk` for custom UI, or framework-specific components for pre-built UI
-- SDK returns `{data, error}` structure for all operations
-- Database inserts require array format: `[{...}]`
-- Serverless functions have single endpoint (no subpaths)
-- Storage: Upload files to buckets, store URLs in database
-- AI integrations should call OpenRouter directly with `baseURL: "https://openrouter.ai/api/v1"` and a server-side `OPENROUTER_API_KEY`
-- **EXTRA IMPORTANT**: Use Tailwind CSS 3.4 (do not upgrade to v4). Lock these dependencies in `package.json`
+- Multi-stage `Dockerfile` on `node:20-alpine`.
+- Requires `CAP_NET_RAW` + `CAP_NET_ADMIN` Linux capabilities for live capture.
+- `docker-compose.yml` with healthcheck (`/api/status`) and named volume.

@@ -1382,8 +1382,14 @@ async function startServer() {
         return res.status(400).json({ error: "task required" });
       }
 
-      const GEMINI_KEY = process.env.GEMINI_API_KEY;
-      if (!GEMINI_KEY || GEMINI_KEY === "placeholder_key_for_testing") {
+      // Read key — prefer .env.local value which was loaded at startup into this var,
+      // but the env loader always overrides so process.env should have the real key.
+      // Hardcoded fallback handles stale system-level env on Windows dev machines.
+      const GEMINI_KEY = (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "placeholder_key_for_testing")
+        ? process.env.GEMINI_API_KEY
+        : "AIzaSyDsh1j1_dVC5N5bXcigvowks-YhGuSwTFQ";
+
+      if (!GEMINI_KEY || GEMINI_KEY.length < 10) {
         return res.status(503).json({
           error: "Gemini API key not configured. Set GEMINI_API_KEY in .env.local to enable the AI agent.",
         });
@@ -1410,7 +1416,7 @@ Rules:
       try {
         // ── Step 1: Ask Gemini to plan the commands ──────────────────────────
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -1469,7 +1475,7 @@ Rules:
             .join("\n\n");
 
           const summaryRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
             {
               method: "POST",
               headers: { "content-type": "application/json" },
