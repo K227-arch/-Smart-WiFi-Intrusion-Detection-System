@@ -44,7 +44,8 @@
     ],
     "extraResources": [
       { "from": "models", "to": "models" },
-      { "from": "data", "to": "data" }
+      { "from": "data", "to": "data" },
+      { "from": "installers", "to": "installers" }
     ],
     "mac": {
       "category": "public.app-category.utilities",

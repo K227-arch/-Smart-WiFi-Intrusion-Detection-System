@@ -3,7 +3,7 @@
  * Uses the `cap` module (libpcap bindings) to capture live traffic from
  * any network interface (wired or wireless).
  *
- * Falls back gracefully to the simulator if libpcap is unavailable or
+ * Falls back gracefully if libpcap is unavailable or
  * the process lacks capture privileges.
  */
 
@@ -166,20 +166,56 @@ export class PacketCaptureEngine extends EventEmitter {
   }
 
   async start(): Promise<boolean> {
-    // On Windows without Npcap, skip capture entirely to avoid native assertion crashes
+    // On Windows, use device list to find the correct pcap device
     if (process.platform === "win32") {
       try {
         const { createRequire } = await import("module");
         const require = createRequire(import.meta.url);
         const capModule = require("cap");
         const Cap = capModule.Cap ?? capModule.default?.Cap ?? capModule;
-        const device = Cap.findDevice(this.iface);
-        // Validate the device string before opening
-        if (!device || !device.includes("\\Device\\")) {
-          console.warn(`⚠ Live capture unavailable: interface "${this.iface}" not found as a valid pcap device.`);
+
+        // Get the full device list and find our interface
+        const deviceList: Array<{ name: string; description: string; addresses: any[] }> = Cap.deviceList();
+        let device: string | null = null;
+
+        // Strategy 1: Match by interface name in description (e.g., "Wi-Fi" → "MediaTek Wi-Fi ...")
+        const ifaceLower = this.iface.toLowerCase();
+        const byDesc = deviceList.find(d =>
+          d.description.toLowerCase().includes(ifaceLower) ||
+          d.description.toLowerCase().includes("wi-fi") ||
+          d.description.toLowerCase().includes("wireless")
+        );
+        if (byDesc) device = byDesc.name;
+
+        // Strategy 2: If not found, try findDevice with the interface name
+        if (!device) {
+          const found = Cap.findDevice(this.iface);
+          if (found && found.includes("\\Device\\")) device = found;
+        }
+
+        // Strategy 3: Match by IP address from OS network interfaces
+        if (!device) {
+          const os = await import("os");
+          const ifaces = os.networkInterfaces();
+          const ifAddrs = ifaces[this.iface];
+          if (ifAddrs) {
+            const ipv4 = ifAddrs.find(a => a.family === "IPv4" && !a.internal);
+            if (ipv4) {
+              const byIp = deviceList.find(d =>
+                d.addresses?.some((a: any) => a.addr === ipv4.address)
+              );
+              if (byIp) device = byIp.name;
+            }
+          }
+        }
+
+        if (!device) {
+          console.warn(`⚠ Live capture unavailable: interface "${this.iface}" not found in pcap device list.`);
+          console.warn(`  Available devices: ${deviceList.map(d => d.description).join(", ")}`);
           this.pcapAvailable = false;
           return false;
         }
+
         const c = new Cap();
         const linkType = c.open(device, this.filter || "ip or arp", 65535, this.buffer);
         this.cap = c;

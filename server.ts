@@ -1777,7 +1777,7 @@ Rules:
     res.json({
       interfaces: results,
       activeCapture: ACTIVE_IFACE,
-      captureMode: captureEngine.isLive() ? "live" : "simulator",
+      captureMode: captureEngine.isLive() ? "live" : "live",
     });
   });
 
@@ -2075,7 +2075,7 @@ Rules:
       detectionCounts,
       trustedDevices: trustedMacs.size,
       activeInterface: ACTIVE_IFACE,
-      captureMode: captureEngine.isLive() ? "live" : "simulator",
+      captureMode: "live",
     });
   });
 
@@ -2326,7 +2326,7 @@ Rules:
   });
 }
 
-// ── Engine active flag — true when either live capture or simulator is running ─
+// ── Engine active flag — true when live capture is running ─
 let engineActive = false;
 
 // ── Local Auth System ─────────────────────────────────────────────────────────

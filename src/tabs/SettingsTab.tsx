@@ -542,17 +542,15 @@ export function SettingsTab({ engineConfig, onSaveConfig }: SettingsTabProps) {
             Select the network interface SALAMANDA monitors. Changes take effect on next restart.
           </p>
           <div className="flex items-center gap-3 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg">
-            <div className={cn("w-2 h-2 rounded-full shrink-0", captureMode === "live" ? "bg-emerald-500 animate-pulse" : "bg-amber-400 animate-pulse")} />
+            <div className="w-2 h-2 rounded-full shrink-0 bg-emerald-500 animate-pulse" />
             <span className="text-[10px] text-slate-400 font-mono">
               Active: <span className="text-white font-bold">{activeCapture || "—"}</span>
             </span>
             <span className={cn(
               "ml-auto px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase",
-              captureMode === "live"
-                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                : "bg-amber-500/15 text-amber-400 border-amber-500/30"
+              "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
             )}>
-              {captureMode === "live" ? "Live Capture" : "Simulator"}
+              Live Capture
             </span>
           </div>
           <div className="space-y-2">

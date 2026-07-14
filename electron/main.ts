@@ -4,8 +4,8 @@
  * Works on macOS, Windows, and Linux.
  */
 
-import { app, BrowserWindow, Menu, Tray, nativeImage, shell, ipcMain } from "electron";
-import { spawn, type ChildProcess } from "child_process";
+import { app, BrowserWindow, Menu, Tray, nativeImage, shell, ipcMain, dialog } from "electron";
+import { spawn, execSync, type ChildProcess } from "child_process";
 import path from "path";
 import fs from "fs";
 
@@ -17,6 +17,44 @@ const SERVER_URL = `http://localhost:${SERVER_PORT}`;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let serverProcess: ChildProcess | null = null;
+
+// ── Check and install Npcap if missing (Windows only) ─────────────────────────
+function checkNpcap(): boolean {
+  if (process.platform !== "win32") return true;
+  return fs.existsSync("C:\\Program Files\\Npcap\\NPFInstall.exe");
+}
+
+async function promptNpcapInstall(): Promise<void> {
+  if (process.platform !== "win32" || checkNpcap()) return;
+
+  const installerPaths = [
+    path.join(process.resourcesPath ?? "", "installers", "npcap-1.80.exe"),
+    path.join(__dirname, "..", "installers", "npcap-1.80.exe"),
+    path.join(process.cwd(), "installers", "npcap-1.80.exe"),
+  ];
+
+  const installer = installerPaths.find((p) => fs.existsSync(p));
+
+  const { response } = await dialog.showMessageBox({
+    type: "info",
+    title: "SALAMANDA WIDS — Npcap Required",
+    message: "Npcap is required for live packet capture.",
+    detail: installer
+      ? "SALAMANDA includes Npcap. Would you like to install it now? (Requires admin privileges)"
+      : "Please install Npcap from https://npcap.com to enable live packet capture.",
+    buttons: installer ? ["Install Now", "Skip (limited mode)"] : ["OK"],
+    defaultId: 0,
+  });
+
+  if (response === 0 && installer) {
+    try {
+      // Run installer with elevation
+      execSync(`powershell -Command "Start-Process '${installer}' -Verb RunAs -Wait"`, { stdio: "ignore" });
+    } catch {
+      // User cancelled UAC or install failed — continue without it
+    }
+  }
+}
 
 // ── Start the Express/WIDS backend server ────────────────────────────────────
 function startBackend(): Promise<void> {
@@ -119,6 +157,9 @@ function getAppIcon(): Electron.NativeImage | undefined {
 app.whenReady().then(async () => {
   // macOS: hide dock icon while loading
   if (process.platform === "darwin") app.dock?.hide();
+
+  // Check for Npcap on Windows — prompt install if missing
+  await promptNpcapInstall();
 
   await startBackend();
 

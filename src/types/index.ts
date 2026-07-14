@@ -50,7 +50,7 @@ export interface SystemStatus {
   detectionCounts: Record<string, number>;
   trustedDevices: number;
   activeInterface?: string;
-  captureMode?: "live" | "simulator";
+  captureMode?: "live";
 }
 
 export interface Analytics {
