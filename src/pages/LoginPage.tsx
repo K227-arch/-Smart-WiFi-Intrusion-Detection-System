@@ -60,7 +60,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
         if (err) throw new Error(err.message ?? "Invalid email or password");
         if (data?.accessToken) {
           onLogin();
-        } else if (data?.requireOtp) {
+        } else if ((data as any)?.requireOtp) {
           // OTP required for sign-in (2FA)
           setScreen("verify");
         }
