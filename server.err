@@ -1,0 +1,10 @@
+(node:2512) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+⚠ Live capture unavailable (The specified module could not be found.
+\\?\C:\Users\HP OMEN\Desktop\projects\-Smart-WiFi-Intrusion-Detection-System\node_modules\cap\build\Release\cap.node).
+⚠ Live capture unavailable on WiFi — running in simulator mode.
+  Install Npcap (Windows) or run: sudo npm run setup:capture (macOS/Linux)
+  Simulator will generate synthetic traffic for demo purposes.
+DB write error (alert insert): InsForgeError: Request timed out after 30000ms
+DB write error (traffic bucket): InsForgeError: Request timed out after 30000ms
+DB write error (alert insert): InsForgeError: Request timed out after 30000ms

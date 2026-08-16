@@ -16,14 +16,14 @@ COPY . .
 RUN npm run build && npm run build:server
 
 # ── Stage 2: Production ────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:20-slim AS runner
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Runtime deps for native modules + libcap for capability setting
-RUN apk add --no-cache libpcap libcap
+# Runtime deps for packet capture
+RUN apt-get update && apt-get install -y --no-install-recommends libpcap0.8 wget && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN npm ci --omit=dev
@@ -36,8 +36,8 @@ COPY --from=builder /app/dist/server.cjs ./dist/server.cjs
 COPY --from=builder /app/models ./models
 COPY --from=builder /app/data/wids-config.json ./data/wids-config.json
 
-# Grant CAP_NET_RAW to node so packet capture works without running as root
-RUN setcap cap_net_raw,cap_net_admin=eip $(which node)
+# Note: For live capture, add cap_add: [NET_RAW, NET_ADMIN] in docker-compose
+# RUN setcap cap_net_raw,cap_net_admin=eip $(which node)
 
 RUN mkdir -p /app/data
 

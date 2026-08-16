@@ -4,5 +4,6 @@ dist
 .env
 *.log
 data/
+!data/wids-config.json
 functions/
 .vscode/

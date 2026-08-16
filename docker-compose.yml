@@ -10,6 +10,7 @@ services:
       - "3001:3000"
     environment:
       NODE_ENV: production
+      HOST: "0.0.0.0"
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       APP_URL: ${APP_URL:-http://localhost:3000}
       # Set your wireless interface here for live capture (requires --privileged)
