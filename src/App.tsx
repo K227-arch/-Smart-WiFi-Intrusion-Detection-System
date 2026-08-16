@@ -5,7 +5,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { insforge } from "./lib/insforge";
+import { insforge, localAuth } from "./lib/insforge";
 import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
