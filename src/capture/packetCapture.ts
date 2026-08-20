@@ -152,6 +152,14 @@ export class PacketCaptureEngine extends EventEmitter {
   private stats: CaptureStats;
   private active = false;
   private pcapAvailable = false;
+  private lastPacketTime = 0;
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Silence threshold: if no packets arrive within this window the watchdog
+  // emits "capture-error" so the server can restart capture automatically.
+  // 60 s is generous — most interfaces see ARP/mDNS heartbeats well within that.
+  private static readonly WATCHDOG_INTERVAL_MS = 30_000;
+  private static readonly SILENCE_THRESHOLD_MS = 60_000;
 
   constructor(private iface: string = "en0", private filter: string = "") {
     super();
@@ -163,6 +171,31 @@ export class PacketCaptureEngine extends EventEmitter {
       startTime: Date.now(),
       isLive: false,
     };
+  }
+
+  private startWatchdog() {
+    this.lastPacketTime = Date.now();
+    this.stopWatchdog();
+    this.watchdogTimer = setInterval(() => {
+      if (!this.active) return;
+      const silence = Date.now() - this.lastPacketTime;
+      if (silence > PacketCaptureEngine.SILENCE_THRESHOLD_MS) {
+        console.warn(`⚠ Capture watchdog: no packets for ${Math.round(silence / 1000)}s on ${this.iface} — restarting`);
+        this.stop();
+        this.emit("capture-error", new Error(`silence timeout (${Math.round(silence / 1000)}s)`));
+      }
+    }, PacketCaptureEngine.WATCHDOG_INTERVAL_MS);
+  }
+
+  private stopWatchdog() {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  private resetWatchdog() {
+    this.lastPacketTime = Date.now();
   }
 
   async start(): Promise<boolean> {
@@ -224,6 +257,7 @@ export class PacketCaptureEngine extends EventEmitter {
         this.stats.isLive = true;
         c.on("packet", (nbytes: number, trunc: boolean) => {
           if (!this.active) return;
+          this.resetWatchdog();
           this.stats.packetsReceived++;
           try {
             const raw = this.buffer.slice(0, nbytes);
@@ -234,6 +268,12 @@ export class PacketCaptureEngine extends EventEmitter {
             }
           } catch { /* malformed */ }
         });
+        c.on("error", (err: Error) => {
+          console.warn(`⚠ Capture error on ${this.iface}:`, err.message);
+          this.stop();
+          this.emit("capture-error", err);
+        });
+        this.startWatchdog();
         console.log(`✓ Live capture started on ${this.iface} (${linkType}) filter="${this.filter}"`);
         return true;
       } catch (e: any) {
@@ -260,6 +300,7 @@ export class PacketCaptureEngine extends EventEmitter {
 
       c.on("packet", (nbytes: number, trunc: boolean) => {
         if (!this.active) return;
+        this.resetWatchdog();
         this.stats.packetsReceived++;
         try {
           const raw = this.buffer.slice(0, nbytes);
@@ -270,7 +311,12 @@ export class PacketCaptureEngine extends EventEmitter {
           }
         } catch { /* malformed */ }
       });
-
+      c.on("error", (err: Error) => {
+        console.warn(`⚠ Capture error on ${this.iface}:`, err.message);
+        this.stop();
+        this.emit("capture-error", err);
+      });
+      this.startWatchdog();
       console.log(`✓ Live capture started on ${this.iface} (${linkType}) filter="${this.filter}"`);
       return true;
     } catch (e: any) {
@@ -282,10 +328,13 @@ export class PacketCaptureEngine extends EventEmitter {
 
   stop() {
     this.active = false;
+    this.stopWatchdog();
     if (this.cap) {
       try { this.cap.close(); } catch { /* ignore */ }
       this.cap = null;
     }
+    this.pcapAvailable = false;
+    this.stats.isLive = false;
   }
 
   getStats(): CaptureStats { return { ...this.stats }; }

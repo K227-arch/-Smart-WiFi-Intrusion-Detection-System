@@ -5,7 +5,9 @@ import crypto from "crypto";
 import https from "https";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
-import * as ort from "onnxruntime-node";
+// onnxruntime-node is optional — load dynamically so missing native binary doesn't crash startup
+let ort: typeof import("onnxruntime-node") | null = null;
+try { ort = await import("onnxruntime-node"); } catch { console.warn("⚠ onnxruntime-node unavailable — ML scoring disabled"); }
 import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
 import { NetworkAnalyzer, type NetworkAlert, addOwnIp } from "./src/capture/networkAnalyzer";
 import { loadSnortRules, matchSnortRule, ensureDefaultRulesFile, type SnortRuleParsed } from "./src/capture/snortRules";
@@ -34,19 +36,30 @@ try {
 import os from "os";
 
 function detectActiveInterface(): string {
-  const preferred = ["en1", "en0", "wlan0", "wlan1", "wlp2s0"];
+  // Windows Wi-Fi comes first, then macOS/Linux names
+  const preferred = ["Wi-Fi", "WLAN", "en1", "en0", "wlan0", "wlan1", "wlp2s0"];
+  // Patterns to skip — virtual/loopback/VPN adapters that are never the real WiFi
+  const skipPatterns = ["vmnet", "vmware", "virtualbox", "vbox", "loopback",
+                        "bluetooth", "tunnel", "teredo", "isatap", "6to4",
+                        "miniport", "wan miniport", "hyper-v"];
   const ifaces = os.networkInterfaces();
 
-  // Try preferred order first
+  // 1. Try preferred names first (exact match)
   for (const name of preferred) {
     const addrs = ifaces[name];
     if (addrs?.some((a) => a.family === "IPv4" && !a.internal)) return name;
   }
-  // Fall back to any active non-loopback IPv4 interface
+  // 2. Any active non-loopback IPv4 interface that isn't virtual
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    const lower = name.toLowerCase();
+    if (skipPatterns.some((p) => lower.includes(p))) continue;
+    if (addrs?.some((a) => a.family === "IPv4" && !a.internal)) return name;
+  }
+  // 3. Last resort — take anything active
   for (const [name, addrs] of Object.entries(ifaces)) {
     if (addrs?.some((a) => a.family === "IPv4" && !a.internal)) return name;
   }
-  return "en1"; // last resort
+  return process.platform === "win32" ? "Wi-Fi" : "en1";
 }
 
 const ACTIVE_IFACE = process.env.CAPTURE_IFACE ?? detectActiveInterface();
@@ -91,11 +104,15 @@ const MODEL_PATH_V2 = path.join(process.cwd(), "models", "wids_rf_v2.onnx");
 // Model v2 NB: lightweight Naive Bayes fallback
 const MODEL_PATH_NB = path.join(process.cwd(), "models", "wids_nb_v2.onnx");
 
-let ortSessionV1: ort.InferenceSession | null = null;
-let ortSessionV2: ort.InferenceSession | null = null;
-let ortSessionNB: ort.InferenceSession | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let ortSessionV1: any | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let ortSessionV2: any | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let ortSessionNB: any | null = null;
 
 async function loadOnnxModel() {
+  if (!ort) { console.warn("⚠ onnxruntime-node not available — ONNX models skipped"); return; }
   try {
     ortSessionV1 = await ort.InferenceSession.create(MODEL_PATH_V1);
     console.log("✓ ONNX v1 (wireless RF) loaded");
@@ -121,8 +138,8 @@ async function onnxInfer(features: number[]): Promise<{ score: number; classInde
 
   try {
     const input = new Float32Array(features);
-    const tensor = new ort.Tensor("float32", input, [1, 5]);
-    const feeds: Record<string, ort.Tensor> = {};
+    const tensor = new ort!.Tensor("float32", input, [1, 5]);
+    const feeds: Record<string, unknown> = {};
     feeds[session.inputNames[0]] = tensor;
     const results = await session.run(feeds);
     const labelOutput = results[session.outputNames[0]];
@@ -148,8 +165,8 @@ async function onnxInferV2(features: number[]): Promise<{ classIndex: number; cl
   if (!session) return { classIndex: 0, className: "Normal", confidence: 1 };
   try {
     const input = new Float32Array(features);
-    const tensor = new ort.Tensor("float32", input, [1, 10]);
-    const feeds: Record<string, ort.Tensor> = {};
+    const tensor = new ort!.Tensor("float32", input, [1, 10]);
+    const feeds: Record<string, unknown> = {};
     feeds[session.inputNames[0]] = tensor;
     const results = await session.run(feeds);
     const classIndex = Number(results[session.outputNames[0]].data[0]);
@@ -2261,10 +2278,17 @@ Rules:
       bssidChannelMap.set(n.bssid, n.channel);
     });
 
-    // ── Start live packet capture on the active WiFi interface ──
-    captureEngine.start().then((live) => {
+    // ── Start live packet capture — with auto-restart on error/silence ────────
+    let captureRestartTimer: ReturnType<typeof setTimeout> | null = null;
+    let captureRestartAttempts = 0;
+    const MAX_RESTART_ATTEMPTS = 10;
+    const RESTART_BACKOFF_MS = [5_000, 10_000, 15_000, 30_000, 60_000]; // escalating delays
+
+    const startCapture = async () => {
+      const live = await captureEngine.start();
       if (live) {
         engineActive = true;
+        captureRestartAttempts = 0; // reset backoff on success
         console.log(`✓ Live capture active on ${ACTIVE_IFACE} — capturing real network traffic`);
       } else {
         console.warn(`⚠ Live capture unavailable on ${ACTIVE_IFACE}.`);
@@ -2272,10 +2296,7 @@ Rules:
         console.warn("  Falling back to network stats polling for traffic data.");
 
         // ── Fallback: Poll network interface statistics for traffic data ──
-        // When pcap isn't available, we use OS-level network stats to show real
-        // traffic volume on the dashboard. This gives dynamic packet counts
-        // based on actual network activity in the environment.
-        engineActive = true; // Mark as active so dashboard shows monitoring state
+        engineActive = true;
         let prevBytes = 0;
         const pollNetworkStats = async () => {
           try {
@@ -2283,7 +2304,6 @@ Rules:
               const { exec } = await import("child_process");
               const { promisify } = await import("util");
               const execAsync = promisify(exec);
-              // Get stats from the active WiFi adapter specifically
               const { stdout } = await execAsync(
                 `powershell -Command "(Get-NetAdapterStatistics -Name 'Wi-Fi' -ErrorAction SilentlyContinue) | Select-Object ReceivedBytes,SentBytes,ReceivedUnicastPackets,SentUnicastPackets | ConvertTo-Json"`,
                 { encoding: "utf-8" }
@@ -2291,13 +2311,10 @@ Rules:
               if (!stdout.trim()) return;
               const stats = JSON.parse(stdout);
               const totalBytes = (stats.ReceivedBytes || 0) + (stats.SentBytes || 0);
-              const totalPkts = (stats.ReceivedUnicastPackets || 0) + (stats.SentUnicastPackets || 0);
               if (prevBytes > 0 && totalBytes > prevBytes) {
                 const deltaBytes = totalBytes - prevBytes;
-                // Use actual packet count deltas if available
                 const estimatedPackets = Math.max(1, Math.floor(deltaBytes / 500));
                 totalPacketsProcessed += estimatedPackets;
-                // Update traffic bucket
                 const now = Date.now();
                 if (!currentBucket || now - bucketStartTime > BUCKET_INTERVAL_MS) {
                   if (currentBucket) {
@@ -2308,18 +2325,41 @@ Rules:
                   currentBucket = { time: new Date().toLocaleTimeString(), data: 0, beacons: 0, deauth: 0, mgmt: 0 };
                 }
                 currentBucket.data += estimatedPackets;
-              } else if (prevBytes === 0 && totalBytes > 0) {
-                // First read — just set baseline
               }
               prevBytes = totalBytes;
             }
           } catch { /* ignore stats errors */ }
         };
-        // Poll every 5 seconds
-        setInterval(pollNetworkStats, 5000);
+        setInterval(pollNetworkStats, 5_000);
         pollNetworkStats();
       }
+    };
+
+    // ── Auto-restart handler — fires on watchdog silence timeout or cap error ─
+    captureEngine.on("capture-error", (err: Error) => {
+      if (captureRestartTimer) return; // already scheduled
+      if (captureRestartAttempts >= MAX_RESTART_ATTEMPTS) {
+        console.warn(`⚠ Capture: max restart attempts (${MAX_RESTART_ATTEMPTS}) reached — giving up`);
+        return;
+      }
+      const delay = RESTART_BACKOFF_MS[Math.min(captureRestartAttempts, RESTART_BACKOFF_MS.length - 1)];
+      captureRestartAttempts++;
+      console.warn(`⚠ Capture stopped (${err.message}). Restarting in ${delay / 1000}s (attempt ${captureRestartAttempts})…`);
+      captureRestartTimer = setTimeout(async () => {
+        captureRestartTimer = null;
+        console.log(`↺ Restarting live capture on ${ACTIVE_IFACE}…`);
+        const live = await captureEngine.start();
+        if (live) {
+          captureRestartAttempts = 0;
+          console.log(`✓ Live capture restored on ${ACTIVE_IFACE}`);
+        } else {
+          // Trigger another restart attempt
+          captureEngine.emit("capture-error", new Error("restart failed"));
+        }
+      }, delay);
     });
+
+    startCapture();
 
     // ── Sync packet count + detection stats to Insforge every 30s ──
     setInterval(() => {
