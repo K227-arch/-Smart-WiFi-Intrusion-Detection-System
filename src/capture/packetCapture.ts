@@ -46,6 +46,8 @@ export interface CapturedPacket {
   interface: string;
   length: number;
   rawHex?: string;
+  // Layer 4 payload — first 512 bytes, populated for TCP and UDP
+  payload?: Buffer;
 }
 
 export interface CaptureStats {
@@ -117,7 +119,12 @@ export function parseEthernetFrame(buf: Buffer, iface: string): CapturedPacket |
       packet.srcPort = buf.readUInt16BE(l4Offset);
       packet.dstPort = buf.readUInt16BE(l4Offset + 2);
       packet.tcpFlags = buf[l4Offset + 13];
-      packet.payloadLength = buf.length - l4Offset - ((buf[l4Offset + 12] >> 4) * 4);
+      const tcpDataOffset = (buf[l4Offset + 12] >> 4) * 4;
+      const payloadStart = l4Offset + tcpDataOffset;
+      packet.payloadLength = buf.length - payloadStart;
+      if (packet.payloadLength > 0) {
+        packet.payload = buf.slice(payloadStart, Math.min(payloadStart + 512, buf.length));
+      }
     }
 
     // UDP
@@ -125,6 +132,9 @@ export function parseEthernetFrame(buf: Buffer, iface: string): CapturedPacket |
       packet.srcPort = buf.readUInt16BE(l4Offset);
       packet.dstPort = buf.readUInt16BE(l4Offset + 2);
       packet.payloadLength = buf.readUInt16BE(l4Offset + 4) - 8;
+      if (packet.payloadLength > 0 && buf.length > l4Offset + 8) {
+        packet.payload = buf.slice(l4Offset + 8, Math.min(l4Offset + 8 + 512, buf.length));
+      }
 
       // DNS (port 53)
       if ((packet.srcPort === 53 || packet.dstPort === 53) && buf.length > l4Offset + 20) {
@@ -157,9 +167,9 @@ export class PacketCaptureEngine extends EventEmitter {
 
   // Silence threshold: if no packets arrive within this window the watchdog
   // emits "capture-error" so the server can restart capture automatically.
-  // 60 s is generous — most interfaces see ARP/mDNS heartbeats well within that.
-  private static readonly WATCHDOG_INTERVAL_MS = 30_000;
-  private static readonly SILENCE_THRESHOLD_MS = 60_000;
+  // 5 minutes — quiet networks (no active traffic) can easily go 60s+ between packets.
+  private static readonly WATCHDOG_INTERVAL_MS = 60_000;
+  private static readonly SILENCE_THRESHOLD_MS = 300_000; // 5 minutes
 
   constructor(private iface: string = "en0", private filter: string = "") {
     super();

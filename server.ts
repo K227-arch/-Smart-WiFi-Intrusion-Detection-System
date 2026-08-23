@@ -11,6 +11,7 @@ try { ort = await import("onnxruntime-node"); } catch { console.warn("⚠ onnxru
 import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
 import { NetworkAnalyzer, type NetworkAlert, addOwnIp } from "./src/capture/networkAnalyzer";
 import { loadSnortRules, matchSnortRule, ensureDefaultRulesFile, type SnortRuleParsed } from "./src/capture/snortRules";
+import { MalwareDetector, type MalwareAlert } from "./src/capture/malwareDetector";
 
 // ── Load .env.local — inline to avoid tsx bundler issues with dotenv import ──
 // We read the file directly and push vars into process.env before anything else.
@@ -221,7 +222,7 @@ interface WiFiPacket {
 interface Alert {
   id: string;
   timestamp: number;
-  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY";
+  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY" | "MALWARE_DETECTED";
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
@@ -294,12 +295,27 @@ function loadAlerts(): Alert[] {
   return [];
 }
 
+// Debounced alert save — coalesces rapid successive writes into one disk op
+// to avoid EBUSY errors when many alerts fire at once (e.g. malware scan).
+let _alertSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let _pendingAlerts: Alert[] | null = null;
 function saveAlerts(alerts: Alert[]) {
-  try {
-    fs.writeFileSync(ALERTS_FILE, JSON.stringify(alerts.slice(0, 200)));
-  } catch (e) {
-    console.error("Could not save alerts:", e);
-  }
+  _pendingAlerts = alerts;
+  if (_alertSaveTimer) return; // already scheduled
+  _alertSaveTimer = setTimeout(() => {
+    _alertSaveTimer = null;
+    const toSave = _pendingAlerts;
+    _pendingAlerts = null;
+    if (!toSave) return;
+    try {
+      fs.writeFileSync(ALERTS_FILE, JSON.stringify(toSave.slice(0, 200)));
+    } catch (e) {
+      // retry once after 500ms if still busy
+      setTimeout(() => {
+        try { fs.writeFileSync(ALERTS_FILE, JSON.stringify(toSave.slice(0, 200))); } catch { /* give up */ }
+      }, 500);
+    }
+  }, 300); // batch writes within 300ms window
 }
 
 // --- Global State ---
@@ -642,6 +658,30 @@ const captureEngine = new PacketCaptureEngine(
   process.env.CAPTURE_FILTER ?? ""
 );
 const networkAnalyzer = new NetworkAnalyzer();
+const malwareDetector = new MalwareDetector();
+
+// ── Bridge malware detector alerts → main alert system ───────────────────────
+malwareDetector.on("alert", (ma: MalwareAlert) => {
+  addAlert({
+    type: "MALWARE_DETECTED",
+    severity: ma.severity,
+    targetMac: ma.srcMac,
+    targetIp: ma.srcIp,
+    description: `[${ma.category}] ${ma.family}: ${ma.description}`,
+    details: {
+      family: ma.family,
+      category: ma.category,
+      indicator: ma.indicator,
+      srcIp: ma.srcIp,
+      dstIp: ma.dstIp,
+      srcPort: ma.srcPort,
+      dstPort: ma.dstPort,
+      detectionMethod: ma.detectionMethod,
+      method: "malware-detector",
+      ...ma.details,
+    },
+  }, 120_000); // 2-minute dedup per type+MAC
+});
 
 // Network alerts from layer 3/4 analysis
 let networkAlerts: (NetworkAlert & { id: string })[] = [];
@@ -678,6 +718,7 @@ networkAnalyzer.on("alert", (na: NetworkAlert) => {
 // Forward captured packets to network analyzer + NSL-KDD ML
 captureEngine.on("packet", (pkt: CapturedPacket) => {
   networkAnalyzer.processPacket(pkt);
+  malwareDetector.inspect(pkt);
 
   // ── Bridge real captured packet → WiFi detection engine ──────────────────
   // Ethernet frames from a WiFi interface carry real 802.3 traffic.
@@ -2099,6 +2140,7 @@ Rules:
       trustedDevices: trustedMacs.size,
       activeInterface: ACTIVE_IFACE,
       captureMode: "live",
+      malwareDetector: malwareDetector.getStats(),
     });
   });
 
@@ -2281,8 +2323,7 @@ Rules:
     // ── Start live packet capture — with auto-restart on error/silence ────────
     let captureRestartTimer: ReturnType<typeof setTimeout> | null = null;
     let captureRestartAttempts = 0;
-    const MAX_RESTART_ATTEMPTS = 10;
-    const RESTART_BACKOFF_MS = [5_000, 10_000, 15_000, 30_000, 60_000]; // escalating delays
+    const RESTART_BACKOFF_MS = [5_000, 10_000, 15_000, 30_000, 60_000];
 
     const startCapture = async () => {
       const live = await captureEngine.start();
@@ -2338,10 +2379,6 @@ Rules:
     // ── Auto-restart handler — fires on watchdog silence timeout or cap error ─
     captureEngine.on("capture-error", (err: Error) => {
       if (captureRestartTimer) return; // already scheduled
-      if (captureRestartAttempts >= MAX_RESTART_ATTEMPTS) {
-        console.warn(`⚠ Capture: max restart attempts (${MAX_RESTART_ATTEMPTS}) reached — giving up`);
-        return;
-      }
       const delay = RESTART_BACKOFF_MS[Math.min(captureRestartAttempts, RESTART_BACKOFF_MS.length - 1)];
       captureRestartAttempts++;
       console.warn(`⚠ Capture stopped (${err.message}). Restarting in ${delay / 1000}s (attempt ${captureRestartAttempts})…`);
@@ -2353,7 +2390,7 @@ Rules:
           captureRestartAttempts = 0;
           console.log(`✓ Live capture restored on ${ACTIVE_IFACE}`);
         } else {
-          // Trigger another restart attempt
+          // Keep retrying indefinitely — never give up
           captureEngine.emit("capture-error", new Error("restart failed"));
         }
       }, delay);
