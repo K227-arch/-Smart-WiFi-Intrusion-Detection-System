@@ -6,6 +6,9 @@
  *   - DNS monitoring (tunneling, exfiltration, suspicious queries)
  *   - TCP/UDP flow tracking (SYN flood, port scan, connection state)
  *   - Protocol anomaly detection
+ *   - HTTP Host header extraction
+ *   - TLS SNI extraction
+ *   - Per-device application activity tracking
  */
 
 import { EventEmitter } from "events";
@@ -18,6 +21,23 @@ export interface ArpEntry {
   firstSeen: number;
   lastSeen: number;
   conflictCount: number;
+}
+
+// ── Application connection entry ──────────────────────────────────────────────
+// Represents a single observed website or application used by a device.
+export interface AppConnection {
+  srcIp: string;           // device that made the connection
+  dstIp: string;           // destination IP
+  dstPort: number;         // destination port
+  hostname: string;        // HTTP Host or TLS SNI or reverse-resolved hostname
+  protocol: string;        // "HTTPS" | "HTTP" | "DNS" | "SSH" | "FTP" | etc.
+  appCategory: string;     // guessed app category e.g. "Social Media", "Streaming"
+  appName: string;         // guessed app name e.g. "YouTube", "WhatsApp"
+  firstSeen: number;
+  lastSeen: number;
+  byteCount: number;
+  requestCount: number;
+  detectionMethod: "sni" | "http-host" | "dns" | "port" | "rdns";
 }
 
 export interface TcpFlow {
@@ -121,6 +141,223 @@ function shannonEntropy(s: string): number {
   }, 0);
 }
 
+// ── Port → protocol/app name map ─────────────────────────────────────────────
+const PORT_APP_MAP: Record<number, { protocol: string; appName: string; appCategory: string }> = {
+  21:    { protocol: "FTP",     appName: "FTP",           appCategory: "File Transfer" },
+  22:    { protocol: "SSH",     appName: "SSH",           appCategory: "Remote Access" },
+  23:    { protocol: "Telnet",  appName: "Telnet",        appCategory: "Remote Access" },
+  25:    { protocol: "SMTP",    appName: "Email (SMTP)",  appCategory: "Email" },
+  53:    { protocol: "DNS",     appName: "DNS",           appCategory: "Network" },
+  67:    { protocol: "DHCP",    appName: "DHCP",          appCategory: "Network" },
+  80:    { protocol: "HTTP",    appName: "Web Browser",   appCategory: "Web Browsing" },
+  110:   { protocol: "POP3",    appName: "Email (POP3)",  appCategory: "Email" },
+  143:   { protocol: "IMAP",    appName: "Email (IMAP)",  appCategory: "Email" },
+  194:   { protocol: "IRC",     appName: "IRC Chat",      appCategory: "Messaging" },
+  443:   { protocol: "HTTPS",   appName: "Web Browser",   appCategory: "Web Browsing" },
+  445:   { protocol: "SMB",     appName: "File Sharing",  appCategory: "File Transfer" },
+  465:   { protocol: "SMTPS",   appName: "Email (SMTPS)", appCategory: "Email" },
+  587:   { protocol: "SMTP",    appName: "Email (SMTP)",  appCategory: "Email" },
+  993:   { protocol: "IMAPS",   appName: "Email (IMAPS)", appCategory: "Email" },
+  995:   { protocol: "POP3S",   appName: "Email (POP3S)", appCategory: "Email" },
+  1194:  { protocol: "OpenVPN", appName: "VPN",           appCategory: "VPN" },
+  1433:  { protocol: "MSSQL",   appName: "SQL Server",    appCategory: "Database" },
+  1723:  { protocol: "PPTP",    appName: "VPN (PPTP)",    appCategory: "VPN" },
+  3306:  { protocol: "MySQL",   appName: "MySQL",         appCategory: "Database" },
+  3389:  { protocol: "RDP",     appName: "Remote Desktop",appCategory: "Remote Access" },
+  4444:  { protocol: "TCP",     appName: "Meterpreter",   appCategory: "Suspicious" },
+  5222:  { protocol: "XMPP",    appName: "Chat (XMPP)",   appCategory: "Messaging" },
+  5228:  { protocol: "HTTPS",   appName: "Google Play",   appCategory: "App Store" },
+  5349:  { protocol: "STUN",    appName: "WebRTC",        appCategory: "Video Call" },
+  5900:  { protocol: "VNC",     appName: "VNC",           appCategory: "Remote Access" },
+  6667:  { protocol: "IRC",     appName: "IRC Botnet",    appCategory: "Suspicious" },
+  8080:  { protocol: "HTTP",    appName: "Web Proxy",     appCategory: "Web Browsing" },
+  8443:  { protocol: "HTTPS",   appName: "Alt HTTPS",     appCategory: "Web Browsing" },
+  9001:  { protocol: "TCP",     appName: "Tor",           appCategory: "Anonymizer" },
+  27015: { protocol: "UDP",     appName: "Steam/Game",    appCategory: "Gaming" },
+  3074:  { protocol: "TCP",     appName: "Xbox Live",     appCategory: "Gaming" },
+  3478:  { protocol: "UDP",     appName: "STUN/WebRTC",   appCategory: "Video Call" },
+};
+
+// ── Domain → app name classifier ─────────────────────────────────────────────
+const DOMAIN_APP_MAP: Array<{ pattern: RegExp; appName: string; appCategory: string }> = [
+  // Social Media
+  { pattern: /facebook\.com|fbcdn\.net|fb\.com/, appName: "Facebook", appCategory: "Social Media" },
+  { pattern: /instagram\.com|cdninstagram\.com/, appName: "Instagram", appCategory: "Social Media" },
+  { pattern: /twitter\.com|x\.com|twimg\.com/, appName: "Twitter/X", appCategory: "Social Media" },
+  { pattern: /tiktok\.com|tiktokcdn\.com/, appName: "TikTok", appCategory: "Social Media" },
+  { pattern: /snapchat\.com|sc-cdn\.net/, appName: "Snapchat", appCategory: "Social Media" },
+  { pattern: /linkedin\.com|licdn\.com/, appName: "LinkedIn", appCategory: "Social Media" },
+  { pattern: /pinterest\.com/, appName: "Pinterest", appCategory: "Social Media" },
+  { pattern: /reddit\.com|redd\.it/, appName: "Reddit", appCategory: "Social Media" },
+  // Messaging
+  { pattern: /whatsapp\.com|whatsapp\.net/, appName: "WhatsApp", appCategory: "Messaging" },
+  { pattern: /telegram\.org|t\.me/, appName: "Telegram", appCategory: "Messaging" },
+  { pattern: /signal\.org/, appName: "Signal", appCategory: "Messaging" },
+  { pattern: /discord\.com|discordapp\.com|discord\.gg/, appName: "Discord", appCategory: "Messaging" },
+  { pattern: /slack\.com|slack-edge\.com/, appName: "Slack", appCategory: "Messaging" },
+  { pattern: /teams\.microsoft\.com|skype\.com/, appName: "Teams/Skype", appCategory: "Messaging" },
+  // Streaming
+  { pattern: /netflix\.com|nflxvideo\.net|nflxext\.com/, appName: "Netflix", appCategory: "Streaming" },
+  { pattern: /youtube\.com|youtu\.be|googlevideo\.com|ytimg\.com/, appName: "YouTube", appCategory: "Streaming" },
+  { pattern: /spotify\.com|scdn\.co/, appName: "Spotify", appCategory: "Streaming" },
+  { pattern: /twitch\.tv|jtvnw\.net/, appName: "Twitch", appCategory: "Streaming" },
+  { pattern: /disneyplus\.com|bamgrid\.com/, appName: "Disney+", appCategory: "Streaming" },
+  { pattern: /primevideo\.com|aiv-cdn\.net/, appName: "Prime Video", appCategory: "Streaming" },
+  { pattern: /hbo\.com|hbomax\.com|max\.com/, appName: "HBO Max", appCategory: "Streaming" },
+  { pattern: /soundcloud\.com/, appName: "SoundCloud", appCategory: "Streaming" },
+  // Google
+  { pattern: /google\.com|googleapis\.com|gstatic\.com|googleusercontent\.com/, appName: "Google", appCategory: "Search/Productivity" },
+  { pattern: /gmail\.com|mail\.google\.com/, appName: "Gmail", appCategory: "Email" },
+  { pattern: /drive\.google\.com|docs\.google\.com/, appName: "Google Drive", appCategory: "Cloud Storage" },
+  { pattern: /meet\.google\.com/, appName: "Google Meet", appCategory: "Video Call" },
+  { pattern: /maps\.google\.com|maps\.googleapis\.com/, appName: "Google Maps", appCategory: "Navigation" },
+  // Microsoft
+  { pattern: /microsoft\.com|live\.com|hotmail\.com|outlook\.com|office\.com|office365\.com/, appName: "Microsoft", appCategory: "Search/Productivity" },
+  { pattern: /onedrive\.com|1drv\.ms/, appName: "OneDrive", appCategory: "Cloud Storage" },
+  { pattern: /azure\.com|azureedge\.net/, appName: "Azure", appCategory: "Cloud" },
+  // Apple
+  { pattern: /apple\.com|icloud\.com|mzstatic\.com|aaplimg\.com/, appName: "Apple/iCloud", appCategory: "Cloud Storage" },
+  // Amazon
+  { pattern: /amazon\.com|amazonaws\.com|cloudfront\.net/, appName: "Amazon/AWS", appCategory: "Shopping/Cloud" },
+  // Gaming
+  { pattern: /steampowered\.com|steamcontent\.com/, appName: "Steam", appCategory: "Gaming" },
+  { pattern: /epicgames\.com/, appName: "Epic Games", appCategory: "Gaming" },
+  { pattern: /riotgames\.com|leagueoflegends\.com/, appName: "Riot Games", appCategory: "Gaming" },
+  { pattern: /playstation\.com|sonyentertainmentnetwork\.com/, appName: "PlayStation", appCategory: "Gaming" },
+  { pattern: /xbox\.com|xboxlive\.com/, appName: "Xbox Live", appCategory: "Gaming" },
+  // VPN / Privacy
+  { pattern: /nordvpn\.com|expressvpn\.com|protonvpn\.com|surfshark\.com/, appName: "VPN Service", appCategory: "VPN" },
+  { pattern: /torproject\.org/, appName: "Tor Browser", appCategory: "Anonymizer" },
+  // Finance
+  { pattern: /paypal\.com/, appName: "PayPal", appCategory: "Finance" },
+  { pattern: /stripe\.com/, appName: "Stripe", appCategory: "Finance" },
+  { pattern: /coinbase\.com|binance\.com|kraken\.com/, appName: "Crypto Exchange", appCategory: "Finance" },
+  // Cloud storage
+  { pattern: /dropbox\.com|dropboxstatic\.com/, appName: "Dropbox", appCategory: "Cloud Storage" },
+  { pattern: /box\.com/, appName: "Box", appCategory: "Cloud Storage" },
+  // Productivity
+  { pattern: /zoom\.us|zoom\.com/, appName: "Zoom", appCategory: "Video Call" },
+  { pattern: /notion\.so/, appName: "Notion", appCategory: "Productivity" },
+  { pattern: /github\.com|raw\.githubusercontent\.com/, appName: "GitHub", appCategory: "Development" },
+  { pattern: /gitlab\.com/, appName: "GitLab", appCategory: "Development" },
+  { pattern: /stackoverflow\.com/, appName: "Stack Overflow", appCategory: "Development" },
+  { pattern: /npmjs\.com|registry\.npmjs\.org/, appName: "npm", appCategory: "Development" },
+  // Adult content
+  { pattern: /pornhub\.com|phncdn\.com/, appName: "Pornhub", appCategory: "Adult Content" },
+  { pattern: /xvideos\.com|xvideos-cdn\.com/, appName: "XVideos", appCategory: "Adult Content" },
+  { pattern: /xnxx\.com/, appName: "XNXX", appCategory: "Adult Content" },
+  { pattern: /xhamster\.com|xhcdn\.com/, appName: "xHamster", appCategory: "Adult Content" },
+  { pattern: /redtube\.com/, appName: "RedTube", appCategory: "Adult Content" },
+  { pattern: /youporn\.com/, appName: "YouPorn", appCategory: "Adult Content" },
+  { pattern: /tube8\.com/, appName: "Tube8", appCategory: "Adult Content" },
+  { pattern: /spankbang\.com/, appName: "SpankBang", appCategory: "Adult Content" },
+  { pattern: /eporner\.com/, appName: "ePorner", appCategory: "Adult Content" },
+  { pattern: /onlyfans\.com|onlyfanscdn\.com/, appName: "OnlyFans", appCategory: "Adult Content" },
+  { pattern: /brazzers\.com/, appName: "Brazzers", appCategory: "Adult Content" },
+  { pattern: /reality(?:kings|joes)\.com/, appName: "Reality Kings", appCategory: "Adult Content" },
+  { pattern: /bangbros\.com/, appName: "Bang Bros", appCategory: "Adult Content" },
+  { pattern: /naughtyamerica\.com/, appName: "Naughty America", appCategory: "Adult Content" },
+  { pattern: /chaturbate\.com/, appName: "Chaturbate", appCategory: "Adult Content" },
+  { pattern: /cam4\.com|cam4cdn\.com/, appName: "Cam4", appCategory: "Adult Content" },
+  { pattern: /livejasmin\.com/, appName: "LiveJasmin", appCategory: "Adult Content" },
+  { pattern: /stripchat\.com/, appName: "Stripchat", appCategory: "Adult Content" },
+  { pattern: /myfreecams\.com/, appName: "MyFreeCams", appCategory: "Adult Content" },
+  { pattern: /camsoda\.com/, appName: "CamSoda", appCategory: "Adult Content" },
+  { pattern: /tnaflix\.com|empflix\.com/, appName: "TNAFlix", appCategory: "Adult Content" },
+  { pattern: /motherless\.com/, appName: "Motherless", appCategory: "Adult Content" },
+  { pattern: /fapello\.com|fap\..*|thefap\.com/, appName: "Fapello", appCategory: "Adult Content" },
+  // News & Media
+  { pattern: /bbc\.co\.uk|bbc\.com/, appName: "BBC", appCategory: "News" },
+  { pattern: /cnn\.com/, appName: "CNN", appCategory: "News" },
+  { pattern: /reuters\.com/, appName: "Reuters", appCategory: "News" },
+  { pattern: /aljazeera\.com/, appName: "Al Jazeera", appCategory: "News" },
+  { pattern: /theguardian\.com/, appName: "The Guardian", appCategory: "News" },
+  { pattern: /nytimes\.com/, appName: "NY Times", appCategory: "News" },
+  // Shopping
+  { pattern: /ebay\.com|ebayimg\.com/, appName: "eBay", appCategory: "Shopping" },
+  { pattern: /aliexpress\.com|alicdn\.com/, appName: "AliExpress", appCategory: "Shopping" },
+  { pattern: /shein\.com/, appName: "SHEIN", appCategory: "Shopping" },
+  { pattern: /takealot\.com/, appName: "Takealot", appCategory: "Shopping" },
+  // Food & Delivery
+  { pattern: /ubereats\.com/, appName: "Uber Eats", appCategory: "Food & Delivery" },
+  { pattern: /doordash\.com/, appName: "DoorDash", appCategory: "Food & Delivery" },
+  { pattern: /mr-d\.co\.za|mrdelivery\.com/, appName: "Mr D Food", appCategory: "Food & Delivery" },
+  // Transport
+  { pattern: /uber\.com/, appName: "Uber", appCategory: "Transport" },
+  { pattern: /bolt\.eu/, appName: "Bolt", appCategory: "Transport" },
+  // Hacking / Exploit Tools
+  { pattern: /exploit-db\.com/, appName: "Exploit-DB", appCategory: "Hacking Tool" },
+  { pattern: /metasploit\.com|rapid7\.com/, appName: "Metasploit", appCategory: "Hacking Tool" },
+  { pattern: /hackforums\.net/, appName: "HackForums", appCategory: "Hacking Tool" },
+  { pattern: /nulled\.to|nulled\.cx/, appName: "Nulled Forum", appCategory: "Hacking Tool" },
+  { pattern: /cracked\.io|cracked\.to/, appName: "Cracked Forum", appCategory: "Hacking Tool" },
+  { pattern: /darkc0de\.com|darkcoders\.com/, appName: "DarkC0de", appCategory: "Hacking Tool" },
+  { pattern: /kali\.org/, appName: "Kali Linux", appCategory: "Hacking Tool" },
+  { pattern: /shodan\.io/, appName: "Shodan Scanner", appCategory: "Hacking Tool" },
+  { pattern: /censys\.io/, appName: "Censys Scanner", appCategory: "Hacking Tool" },
+  { pattern: /haveibeenpwned\.com/, appName: "HIBP", appCategory: "Hacking Tool" },
+  // Weapons / Illegal Firearms
+  { pattern: /gunbroker\.com/, appName: "GunBroker", appCategory: "Weapons" },
+  { pattern: /armslist\.com/, appName: "Armslist", appCategory: "Weapons" },
+  { pattern: /cheaperthandirt\.com/, appName: "Cheaper Than Dirt", appCategory: "Weapons" },
+  { pattern: /ghostgunner\.net|ghostguns\.com/, appName: "Ghost Guns", appCategory: "Weapons" },
+  { pattern: /solvent-trap\.com|solventtrap\.com/, appName: "Solvent Trap (Silencer)", appCategory: "Weapons" },
+  // Dark Web / Anonymizers
+  { pattern: /\.onion(?:\.|$)|onion\.(?:link|city|cab|direct|ly|pet|ws)/, appName: "Dark Web (.onion)", appCategory: "Dark Web" },
+  { pattern: /darkwebnews\.com|deepdotweb\.com/, appName: "Dark Web News", appCategory: "Dark Web" },
+  { pattern: /dread\.onion|dreadfultales\.com/, appName: "Dread Forum", appCategory: "Dark Web" },
+  { pattern: /torproject\.org/, appName: "Tor Browser", appCategory: "Dark Web" },
+  { pattern: /i2p(?:project)?\.(?:com|net|org)|geti2p\.net/, appName: "I2P Network", appCategory: "Dark Web" },
+  { pattern: /freenet(?:project)?\.org/, appName: "Freenet", appCategory: "Dark Web" },
+  // Extremism / Hate
+  { pattern: /stormfront\.org/, appName: "Stormfront", appCategory: "Extremism" },
+  { pattern: /dailystormer\.|stormer\.com/, appName: "Daily Stormer", appCategory: "Extremism" },
+  { pattern: /gab\.com|gab\.ai/, appName: "Gab", appCategory: "Extremism" },
+  { pattern: /parler\.com/, appName: "Parler", appCategory: "Extremism" },
+  { pattern: /4chan\.org|8kun\.top|8chan\.moe/, appName: "4chan/8chan", appCategory: "Extremism" },
+  // Drug Markets
+  { pattern: /silkroad|darknetmarket|empire-market|versus-market|alphabay/, appName: "Drug Market", appCategory: "Dark Market" },
+  { pattern: /weedmaps\.com/, appName: "Weedmaps", appCategory: "Dark Market" },
+  // Malware / Phishing Infrastructure
+  { pattern: /pastebin\.com/, appName: "Pastebin", appCategory: "Suspicious" },
+  { pattern: /paste\.ee|paste\.gg|ghostbin\.com/, appName: "Paste Site", appCategory: "Suspicious" },
+  { pattern: /bit\.ly|tinyurl\.com|goo\.gl|t\.co|is\.gd|ow\.ly/, appName: "URL Shortener", appCategory: "Suspicious" },
+  { pattern: /ngrok\.io|ngrok\.com/, appName: "ngrok Tunnel", appCategory: "Suspicious" },
+  { pattern: /serveo\.net|localhost\.run/, appName: "Reverse Tunnel", appCategory: "Suspicious" },
+  { pattern: /temp-mail\.org|guerrillamail\.com|mailinator\.com|throwam\.com/, appName: "Disposable Email", appCategory: "Suspicious" },
+  { pattern: /noip\.com|dyndns\.com|hopto\.org|no-ip\.biz/, appName: "Dynamic DNS", appCategory: "Suspicious" },
+  // Gambling
+  { pattern: /bet365\.com|betway\.com|draftkings\.com|fanduel\.com/, appName: "Sports Betting", appCategory: "Gambling" },
+  { pattern: /pokerstars\.com|888poker\.com|partypoker\.com/, appName: "Online Poker", appCategory: "Gambling" },
+  { pattern: /casino\.com|888casino\.com|betmgm\.com/, appName: "Online Casino", appCategory: "Gambling" },
+];
+
+function classifyConnection(hostname: string, port: number): { protocol: string; appName: string; appCategory: string } {
+  // 1. Try domain pattern matching
+  const lower = hostname.toLowerCase();
+  for (const entry of DOMAIN_APP_MAP) {
+    if (entry.pattern.test(lower)) {
+      const proto = port === 443 || port === 8443 ? "HTTPS" : port === 80 ? "HTTP" : PORT_APP_MAP[port]?.protocol ?? "TCP";
+      return { protocol: proto, appName: entry.appName, appCategory: entry.appCategory };
+    }
+  }
+  // 2. Fall back to port-based classification
+  const portInfo = PORT_APP_MAP[port];
+  if (portInfo) return portInfo;
+  // 3. Generic fallback
+  const proto = port === 443 || port === 8443 ? "HTTPS" : port === 80 || port === 8080 ? "HTTP" : "TCP";
+  return { protocol: proto, appName: hostname, appCategory: "Other" };
+}
+
+// Categories that should generate a security alert when accessed
+const THREAT_CATEGORIES = new Set([
+  "Dark Web",
+  "Hacking Tool",
+  "Weapons",
+  "Extremism",
+  "Dark Market",
+]);
+
 // ── Network Analyzer ──────────────────────────────────────────────────────────
 export class NetworkAnalyzer extends EventEmitter {
   // ARP table: ip → entry
@@ -144,6 +381,12 @@ export class NetworkAnalyzer extends EventEmitter {
   // ICMP flood tracker
   private icmpTracker = new Map<string, { count: number; windowStart: number }>();
 
+  // ── Application connection tracking ──────────────────────────────────────
+  // Key: "srcIp|hostname|dstPort" → AppConnection
+  private appConnections = new Map<string, AppConnection>();
+  // IP → hostname cache from DNS (avoids repeated lookups)
+  private dnsHostCache = new Map<string, string>();
+
   // Stats
   public stats = {
     packetsAnalyzed: 0,
@@ -156,7 +399,43 @@ export class NetworkAnalyzer extends EventEmitter {
   processPacket(pkt: CapturedPacket) {
     this.stats.packetsAnalyzed++;
 
-    // Skip analysis for filtered IPs (own machine, backend servers, CDNs)
+    // ── Activity tracking runs for ALL packets including own machine ──────
+    // This is how we see what websites/apps every device on the network uses,
+    // including the machine running SALAMANDA itself.
+    if (pkt.etherType === 0x0800 && pkt.srcIp && pkt.dstIp) {
+      // DNS query — captures domain lookups from any device
+      if (pkt.dnsQuery && pkt.srcPort !== 53) {
+        // srcIp queried dnsQuery — cache it for connection labelling
+        this.dnsHostCache.set(`${pkt.srcIp}|${pkt.dnsQuery.toLowerCase()}`, pkt.dnsQuery.toLowerCase());
+        this.upsertAppConnection({
+          srcIp: pkt.srcIp, dstIp: pkt.dstIp ?? "unknown", dstPort: 53,
+          hostname: pkt.dnsQuery.toLowerCase(), detectionMethod: "dns",
+          bytesDelta: pkt.length,
+        });
+      }
+      // TCP payload — HTTP Host / TLS SNI
+      if (pkt.protocol === 6 && pkt.payload && pkt.payload.length > 0 && pkt.dstPort) {
+        if (pkt.dstPort === 80 || pkt.dstPort === 8080 || pkt.dstPort === 8000) {
+          const host = this.extractHttpHost(pkt.payload);
+          if (host) this.upsertAppConnection({ srcIp: pkt.srcIp, dstIp: pkt.dstIp, dstPort: pkt.dstPort, hostname: host, detectionMethod: "http-host", bytesDelta: pkt.length });
+        }
+        if (pkt.dstPort === 443 || pkt.dstPort === 8443 || pkt.dstPort === 9443) {
+          const sni = this.extractTlsSni(pkt.payload);
+          if (sni) this.upsertAppConnection({ srcIp: pkt.srcIp, dstIp: pkt.dstIp, dstPort: pkt.dstPort, hostname: sni, detectionMethod: "sni", bytesDelta: pkt.length });
+        }
+        // Known port fallback — any established TCP connection to a recognisable port
+        const portInfo = PORT_APP_MAP[pkt.dstPort];
+        if (portInfo && pkt.dstPort !== 80 && pkt.dstPort !== 443) {
+          // Use a recent DNS entry for this dstIp if we have one
+          const knownHost = [...this.dnsHostCache.entries()]
+            .find(([k]) => k.startsWith(`${pkt.srcIp}|`))
+            ?.[1] ?? pkt.dstIp;
+          this.upsertAppConnection({ srcIp: pkt.srcIp, dstIp: pkt.dstIp, dstPort: pkt.dstPort, hostname: knownHost, detectionMethod: "port", bytesDelta: pkt.length });
+        }
+      }
+    }
+
+    // Skip security alert analysis for filtered IPs (own machine, backend CDNs)
     if (isFilteredIp(pkt.srcIp) || isFilteredIp(pkt.dstIp)) {
       // Still track flows for visibility but don't alert
       if (pkt.etherType === 0x0800 && pkt.protocol === 6) this.trackFlowOnly(pkt);
@@ -369,7 +648,8 @@ export class NetworkAnalyzer extends EventEmitter {
   // ── DNS Analysis ──────────────────────────────────────────────────────────
   private analyzeDns(pkt: CapturedPacket) {
     if (!pkt.dnsQuery || pkt.dnsQuery.length < 3) return;
-    // Skip DNS queries from own machine or to trusted resolvers
+    // Skip security alert analysis for own machine — but activity tracking
+    // already happened above in processPacket before this point.
     if (isFilteredIp(pkt.srcIp)) return;
     this.stats.dnsQueries++;
 
@@ -464,9 +744,171 @@ export class NetworkAnalyzer extends EventEmitter {
     this.stats.activeFlows = this.flowTable.size;
   }
 
+  // ── HTTP Host header extraction ───────────────────────────────────────────
+  private extractHttpHost(payload: Buffer): string | null {
+    try {
+      const text = payload.toString("binary", 0, Math.min(512, payload.length));
+      // Match "Host: example.com" line in HTTP request
+      const m = text.match(/[Hh]ost:\s*([^\r\n:]{3,253})/);
+      if (!m) return null;
+      const host = m[1].trim().toLowerCase().split(":")[0]; // strip port if present
+      // Sanity check — must look like a real hostname
+      if (/^[a-z0-9._-]{3,}$/.test(host) && host.includes(".")) return host;
+    } catch { /* malformed */ }
+    return null;
+  }
+
+  // ── TLS SNI extraction ────────────────────────────────────────────────────
+  // Parses TLS 1.x ClientHello and extracts the SNI server_name extension.
+  private extractTlsSni(payload: Buffer): string | null {
+    try {
+      if (payload.length < 5) return null;
+      // TLS record: content_type=0x16 (handshake), version=0x0301/0x0303
+      if (payload[0] !== 0x16) return null;
+      if (payload[1] !== 0x03) return null;
+      // Handshake message type = 0x01 (ClientHello)
+      if (payload.length < 6 || payload[5] !== 0x01) return null;
+
+      // Skip: record header(5) + handshake header(4) + version(2) + random(32) = 43
+      let pos = 43;
+      if (pos >= payload.length) return null;
+
+      // Session ID length
+      const sessionIdLen = payload[pos++];
+      pos += sessionIdLen;
+      if (pos + 2 >= payload.length) return null;
+
+      // Cipher suites length
+      const cipherLen = payload.readUInt16BE(pos); pos += 2;
+      pos += cipherLen;
+      if (pos + 1 >= payload.length) return null;
+
+      // Compression methods length
+      const compLen = payload[pos++];
+      pos += compLen;
+      if (pos + 2 >= payload.length) return null;
+
+      // Extensions length
+      const extLen = payload.readUInt16BE(pos); pos += 2;
+      const extEnd = pos + extLen;
+
+      // Walk extensions looking for type 0x0000 (SNI)
+      while (pos + 4 <= extEnd && pos + 4 <= payload.length) {
+        const extType = payload.readUInt16BE(pos); pos += 2;
+        const extDataLen = payload.readUInt16BE(pos); pos += 2;
+        if (extType === 0x0000) {
+          // SNI extension: list_len(2) + name_type(1) + name_len(2) + name
+          if (pos + 5 <= payload.length) {
+            pos += 2; // skip list length
+            pos += 1; // skip name type (0 = host_name)
+            const nameLen = payload.readUInt16BE(pos); pos += 2;
+            if (pos + nameLen <= payload.length) {
+              return payload.toString("ascii", pos, pos + nameLen).toLowerCase();
+            }
+          }
+        }
+        pos += extDataLen;
+      }
+    } catch { /* malformed TLS */ }
+    return null;
+  }
+
+  // ── Upsert an app connection record ──────────────────────────────────────
+  private upsertAppConnection(opts: {
+    srcIp: string; dstIp: string; dstPort: number;
+    hostname: string; detectionMethod: AppConnection["detectionMethod"];
+    bytesDelta: number;
+  }) {
+    if (!opts.hostname || opts.hostname === "unknown") return;
+    const key = `${opts.srcIp}|${opts.hostname}|${opts.dstPort}`;
+    const existing = this.appConnections.get(key);
+    const now = Date.now();
+    if (existing) {
+      existing.lastSeen = now;
+      existing.byteCount += opts.bytesDelta;
+      existing.requestCount++;
+      // Upgrade detection method: sni > http-host > dns > port > rdns
+      const rank = { sni: 5, "http-host": 4, dns: 3, port: 2, rdns: 1 };
+      if ((rank[opts.detectionMethod] ?? 0) > (rank[existing.detectionMethod] ?? 0)) {
+        existing.detectionMethod = opts.detectionMethod;
+      }
+    } else {
+      const { protocol, appName, appCategory } = classifyConnection(opts.hostname, opts.dstPort);
+      this.appConnections.set(key, {
+        srcIp: opts.srcIp,
+        dstIp: opts.dstIp,
+        dstPort: opts.dstPort,
+        hostname: opts.hostname,
+        protocol,
+        appName,
+        appCategory,
+        firstSeen: now,
+        lastSeen: now,
+        byteCount: opts.bytesDelta,
+        requestCount: 1,
+        detectionMethod: opts.detectionMethod,
+      });
+
+      // ── Fire a threat alert for dangerous categories ──────────────────
+      if (THREAT_CATEGORIES.has(appCategory)) {
+        const severityMap: Record<string, NetworkAlert["severity"]> = {
+          "Dark Web": "high",
+          "Hacking Tool": "high",
+          "Weapons": "high",
+          "Extremism": "high",
+          "Dark Market": "high",
+        };
+        this.fireAlert({
+          type: "PROTOCOL_ANOMALY",
+          severity: severityMap[appCategory] ?? "medium",
+          srcIp: opts.srcIp,
+          dstIp: opts.dstIp,
+          description: `[${appCategory}] ${opts.srcIp} accessed "${appName}" (${opts.hostname}) — ${appCategory} site detected`,
+          details: {
+            hostname: opts.hostname,
+            appName,
+            appCategory,
+            dstPort: opts.dstPort,
+            detectionMethod: opts.detectionMethod,
+            category: appCategory,
+          },
+          detectionMethod: "signature",
+        });
+      }
+
+      // Evict oldest if over limit
+      if (this.appConnections.size > 2000) {
+        const oldest = [...this.appConnections.entries()]
+          .sort((a, b) => a[1].lastSeen - b[1].lastSeen)[0];
+        if (oldest) this.appConnections.delete(oldest[0]);
+      }
+    }
+  }
+
   // ── Public accessors ──────────────────────────────────────────────────────
   getArpTable(): ArpEntry[] { return [...this.arpTable.values()]; }
   getFlows(): TcpFlow[] { return [...this.flowTable.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 100); }
   getDnsRecords(): DnsRecord[] { return this.dnsRecords.slice(0, 100); }
   getStats() { return { ...this.stats }; }
+
+  // Return app connections grouped by srcIp, sorted by lastSeen desc
+  getAppConnections(): AppConnection[] {
+    return [...this.appConnections.values()]
+      .sort((a, b) => b.lastSeen - a.lastSeen)
+      .slice(0, 500);
+  }
+
+  // Return per-device activity summary
+  getDeviceActivity(): Record<string, AppConnection[]> {
+    const result: Record<string, AppConnection[]> = {};
+    for (const conn of this.appConnections.values()) {
+      if (!result[conn.srcIp]) result[conn.srcIp] = [];
+      result[conn.srcIp].push(conn);
+    }
+    // Sort each device's connections by lastSeen desc
+    for (const ip of Object.keys(result)) {
+      result[ip].sort((a, b) => b.lastSeen - a.lastSeen);
+    }
+    return result;
+  }
 }

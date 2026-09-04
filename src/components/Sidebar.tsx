@@ -23,7 +23,7 @@ import { SidebarStat } from "./ui/SidebarStat";
 export type TabId =
   | "dashboard" | "traffic" | "devices" | "alerts" | "analytics"
   | "ml" | "network" | "snort" | "settings" | "terminal"
-  | "ip" | "routing" | "system" | "tools";
+  | "ip" | "routing" | "system" | "tools" | "activity";
 
 interface SidebarProps {
   selectedTab: TabId;
@@ -107,6 +107,13 @@ export const Sidebar = memo(function Sidebar({
           <NavButton active={selectedTab === "network"} onClick={() => onTabChange("network")}>
             <span className="flex items-center gap-2">
               <Network className="w-3.5 h-3.5" /> Network
+            </span>
+          </NavButton>
+
+          <NavButton active={selectedTab === "activity"} onClick={() => onTabChange("activity")}>
+            <span className="flex items-center gap-2">
+              <Globe className="w-3.5 h-3.5 text-emerald-400/80" />
+              <span className={selectedTab === "activity" ? "" : "text-emerald-400/80"}>Activity</span>
             </span>
           </NavButton>
 

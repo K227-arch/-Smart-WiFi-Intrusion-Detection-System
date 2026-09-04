@@ -1777,6 +1777,28 @@ Rules:
   // GET /api/network/alerts
   app.get("/api/network/alerts", (_req, res) => res.json(networkAlerts.slice(0, 100)));
 
+  // GET /api/activity — per-device website and application activity
+  app.get("/api/activity", (_req, res) => {
+    const deviceActivity = networkAnalyzer.getDeviceActivity();
+    const deviceList = Array.from(devices.values());
+    // Enrich each IP with device info (mac, hostname, status)
+    const enriched: Record<string, {
+      ip: string; mac?: string; hostname?: string; status?: string;
+      connections: ReturnType<typeof networkAnalyzer.getAppConnections>;
+    }> = {};
+    for (const [ip, conns] of Object.entries(deviceActivity)) {
+      const device = deviceList.find((d) => d.ipAddress === ip);
+      enriched[ip] = {
+        ip,
+        mac: device?.mac,
+        hostname: device?.hostname ?? undefined,
+        status: device?.status,
+        connections: conns,
+      };
+    }
+    res.json(enriched);
+  });
+
   // GET /api/network/interfaces — enumerate all active network interfaces on this machine
   app.get("/api/network/interfaces", (_req, res) => {
     const ifaces = os.networkInterfaces();

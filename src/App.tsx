@@ -33,6 +33,7 @@ import { RoutingTab } from "./tabs/RoutingTab";
 import { SystemTab } from "./tabs/SystemTab";
 import { ToolsTab } from "./tabs/ToolsTab";
 import { TerminalTab } from "./tabs/TerminalTab";
+import { ActivityTab } from "./tabs/ActivityTab";
 
 import type { Alert, Analytics, Device, MLResult } from "./types";
 
@@ -447,6 +448,13 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
               <Fragment key="terminal">
                 <ErrorBoundary fallbackLabel="Terminal Error">
                   <TerminalTab />
+                </ErrorBoundary>
+              </Fragment>
+            )}
+            {selectedTab === "activity" && (
+              <Fragment key="activity">
+                <ErrorBoundary fallbackLabel="Network Activity Error">
+                  <ActivityTab />
                 </ErrorBoundary>
               </Fragment>
             )}
