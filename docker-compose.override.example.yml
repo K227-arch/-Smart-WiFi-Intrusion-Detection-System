@@ -1,0 +1,27 @@
+# Example: Live Packet Capture on Linux
+# Copy this to docker-compose.override.yml and uncomment the sections
+#
+# This enables direct access to host network interfaces for live capture
+# ONLY works on Linux hosts (not Windows/macOS)
+
+# version: "3.9"
+
+# services:
+#   salamanda-wids:
+#     # Enable host networking for direct interface access
+#     network_mode: host
+#
+#     # Add Linux capabilities for packet capture
+#     cap_add:
+#       - NET_RAW
+#       - NET_ADMIN
+#
+#     # Remove ports section when using host networking
+#     # ports:
+#     #   - "3001:3000"
+#
+#     # Set your WiFi interface name (use 'ip link show' or 'ifconfig' to find it)
+#     environment:
+#       CAPTURE_IFACE: wlan0
+#       # Optional: BPF filter to limit captured traffic
+#       # CAPTURE_FILTER: "tcp or udp or icmp"

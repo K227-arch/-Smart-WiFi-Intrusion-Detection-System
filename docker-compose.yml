@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   salamanda-wids:
     build:
@@ -12,9 +10,12 @@ services:
       NODE_ENV: production
       HOST: "0.0.0.0"
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      APP_URL: ${APP_URL:-http://localhost:3000}
-      # Set your wireless interface here for live capture (requires --privileged)
-      CAPTURE_IFACE: ${CAPTURE_IFACE:-en0}
+      APP_URL: ${APP_URL:-http://localhost:3001}
+      # Network interface for live packet capture (Linux only)
+      # Set CAPTURE_IFACE=wlan0 or your interface name
+      CAPTURE_IFACE: ${CAPTURE_IFACE:-eth0}
+      # BPF filter for captured traffic (optional)
+      CAPTURE_FILTER: ${CAPTURE_FILTER:-}
     env_file:
       - .env
     restart: unless-stopped
@@ -26,6 +27,12 @@ services:
       start_period: 20s
     volumes:
       - wids-data:/app/data
+    # For live packet capture on Linux host, add:
+    # cap_add:
+    #   - NET_RAW
+    #   - NET_ADMIN
+    # network_mode: host
+    # (then remove 'ports' section above)
 
 volumes:
   wids-data:
