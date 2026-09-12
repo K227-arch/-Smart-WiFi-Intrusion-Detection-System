@@ -7,7 +7,9 @@ import { createServer as createViteServer } from "vite";
 import { createClient } from "@insforge/sdk";
 // onnxruntime-node is optional — load dynamically so missing native binary doesn't crash startup
 let ort: typeof import("onnxruntime-node") | null = null;
-try { ort = await import("onnxruntime-node"); } catch { console.warn("⚠ onnxruntime-node unavailable — ML scoring disabled"); }
+async function loadOrt() {
+  try { ort = await import("onnxruntime-node"); } catch { console.warn("⚠ onnxruntime-node unavailable — ML scoring disabled"); }
+}
 import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
 import { NetworkAnalyzer, type NetworkAlert, addOwnIp } from "./src/capture/networkAnalyzer";
 import { loadSnortRules, matchSnortRule, ensureDefaultRulesFile, type SnortRuleParsed } from "./src/capture/snortRules";
@@ -2769,4 +2771,5 @@ function registerExtendedRoutes(app: import("express").Express) {
 // POST /api/tools/traceroute
 
 startServer();
+loadOrt();
 loadOnnxModel();
