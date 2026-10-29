@@ -104,7 +104,7 @@ function createWindow() {
     title: "SALAMANDA WIDS",
     backgroundColor: "#020617",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: !isDev, // relax CSP in dev for Vite HMR
