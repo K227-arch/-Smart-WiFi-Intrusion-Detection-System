@@ -5,7 +5,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { insforge, localAuth } from "./lib/insforge";
+import { localAuth } from "./lib/insforge";
 import { LoginPage } from "./pages/LoginPage";
 
 import { useWidsData } from "./hooks/useWidsData";
@@ -43,14 +43,9 @@ export default function App() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      // Let the SDK handle the insforge_code OAuth callback automatically
-      const { data } = await insforge.auth.getCurrentUser();
-      if (data?.user) setIsAuthenticated(true);
-
-      // Clean up any OAuth callback params from the URL
-      if (window.location.search.includes("insforge_code") || window.location.search.includes("code")) {
-        window.history.replaceState({}, document.title, window.location.pathname);
-      }
+      // Check local auth (JSON file storage)
+      const user = await localAuth.getCurrentUser();
+      if (user) setIsAuthenticated(true);
 
       setAuthChecked(true);
     };
@@ -217,13 +212,13 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const [currentUser, setCurrentUser] = useState<{ email: string; name?: string; avatar_url?: string; id?: string } | null>(null);
 
   useEffect(() => {
-    insforge.auth.getCurrentUser().then(({ data }) => {
-      if (data?.user) {
+    localAuth.getCurrentUser().then((user) => {
+      if (user) {
         setCurrentUser({
-          id: data.user.id,
-          email: data.user.email,
-          name: data.user.profile?.name ?? undefined,
-          avatar_url: data.user.profile?.avatar_url ?? undefined,
+          id: user.id,
+          email: user.email,
+          name: user.name ?? undefined,
+          avatar_url: user.avatar_url ?? undefined,
         });
       }
     });
@@ -274,7 +269,7 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
   const exportLogs = useCallback(() => window.open("/api/alerts/export", "_blank"), []);
 
   const handleSignOut = useCallback(async () => {
-    await insforge.auth.signOut();
+    await localAuth.signOut();
     onSignOut();
   }, [onSignOut]);
 

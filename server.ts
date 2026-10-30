@@ -2,9 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import https from "https";
 import { createServer as createViteServer } from "vite";
-import { createClient } from "@insforge/sdk";
 // onnxruntime-node is optional — load dynamically so missing native binary doesn't crash startup
 let ort: typeof import("onnxruntime-node") | null = null;
 async function loadOrt() {
@@ -78,20 +76,17 @@ async function resolveHostname(ip: string): Promise<string | null> {
 }
 
 // ── Safe fire-and-forget DB write — silently drops on network error ───────────
-// The InsForge SDK returns a thenable query builder, not a raw Promise.
-// We call .then() on it to execute and swallow network-level errors.
-function dbWrite(query: { then: Function } | Promise<any>, label?: string) {
-  Promise.resolve().then(() => (query as any).then
-    ? (query as any).then((res: any) => {
-        if (res?.error) {
-          const msg: string = res.error?.message ?? String(res.error);
-          if (!msg.includes("fetch failed") && !msg.includes("Network request failed")) {
-            console.error(`DB write error${label ? ` (${label})` : ""}:`, msg);
-          }
-        }
-      })
-    : query
-  ).catch((e: any) => {
+function dbWrite(query: Promise<any> | { then?: Function; catch?: Function }, label?: string) {
+  // Support both Promises and Supabase query builders
+  const promise = "then" in query && typeof query.then === "function" ? query : (query as Promise<any>);
+  promise.then((res: any) => {
+    if (res?.error) {
+      const msg: string = res.error?.message ?? String(res.error);
+      if (!msg.includes("fetch failed") && !msg.includes("Network request failed")) {
+        console.error(`DB write error${label ? ` (${label})` : ""}:`, msg);
+      }
+    }
+  }).catch((e: any) => {
     const msg: string = e?.message ?? String(e);
     if (!msg.includes("fetch failed") && !msg.includes("Network request failed")) {
       console.error(`DB write error${label ? ` (${label})` : ""}:`, msg);
@@ -196,12 +191,13 @@ function heuristicScore(features: number[]): { score: number; classIndex: number
   return { score, classIndex };
 }
 
-// ── Insforge client (server-side, uses API key directly) ──────────────────────
-const INSFORGE_BASE = process.env.INSFORGE_BASE_URL ?? "https://bh9n4s8r.us-east.insforge.app";
-const INSFORGE_KEY  = process.env.INSFORGE_API_KEY ??
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo";
+// ── Supabase client (replaces InsForge) ──────────────────────────────────────
+import { createClient } from "@supabase/supabase-js";
 
-const db = createClient({ baseUrl: INSFORGE_BASE, anonKey: INSFORGE_KEY });
+const SUPABASE_URL = process.env.SUPABASE_URL ?? "https://kuntnvlvyuqetiorvlve.supabase.co";
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
+
+const supabaseDb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // --- Types ---
 interface WiFiPacket {
@@ -1068,14 +1064,14 @@ const detectionEngine = {
           resolveHostname(resolvedIp).then((hostname) => {
             if (hostname && existing) {
               existing.hostname = hostname;
-              dbWrite(db.database.from("devices").update({
+              dbWrite(supabaseDb.from("devices").update({
                 ip_address: resolvedIp,
                 hostname,
                 updated_at: new Date().toISOString(),
               }).eq("mac", existing.mac), "device hostname update");
             }
           });
-          dbWrite(db.database.from("devices").update({
+          dbWrite(supabaseDb.from("devices").update({
             ip_address: resolvedIp,
             updated_at: new Date().toISOString(),
           }).eq("mac", existing.mac), "device ip update");
@@ -1102,7 +1098,7 @@ const detectionEngine = {
         resolveHostname(ipAddress).then((hostname) => {
           if (hostname) {
             newDevice.hostname = hostname;
-            dbWrite(db.database.from("devices").update({
+            dbWrite(supabaseDb.from("devices").update({
               hostname,
               updated_at: new Date().toISOString(),
             }).eq("mac", newDevice.mac), "device hostname");
@@ -1113,7 +1109,7 @@ const detectionEngine = {
       broadcastDevice(newDevice);
 
       // ── Write new device to Insforge (upsert to handle restarts) ──
-      dbWrite(db.database.from("devices").upsert([{
+      dbWrite(supabaseDb.from("devices").upsert([{
         mac: newDevice.mac,
         first_seen: newDevice.firstSeen,
         last_seen: newDevice.lastSeen,
@@ -1247,7 +1243,7 @@ const detectionEngine = {
         const arpEntry = networkAnalyzer.getArpTable().find((e) => e.mac === packet.sourceMac);
         if (arpEntry?.ip) {
           existing.ipAddress = arpEntry.ip;
-          dbWrite(db.database.from("devices").update({ ip_address: arpEntry.ip, updated_at: new Date().toISOString() }).eq("mac", existing.mac), "device ip");
+          dbWrite(supabaseDb.from("devices").update({ ip_address: arpEntry.ip, updated_at: new Date().toISOString() }).eq("mac", existing.mac), "device ip");
         }
       }
     } else {
@@ -1260,7 +1256,7 @@ const detectionEngine = {
       };
       devices.set(packet.sourceMac, newDevice);
       broadcastDevice(newDevice);
-      dbWrite(db.database.from("devices").upsert([{
+      dbWrite(supabaseDb.from("devices").upsert([{
         mac: newDevice.mac, first_seen: newDevice.firstSeen, last_seen: newDevice.lastSeen,
         status: newDevice.status, ssid: null, avg_signal: newDevice.avgSignal,
         ip_address: newDevice.ipAddress ?? null, hostname: null,
@@ -1278,7 +1274,7 @@ function updateTrafficBucket(packet: WiFiPacket) {
 
       // ── Persist completed bucket to Insforge ──
       const bucket = currentBucket;
-      dbWrite(db.database.from("traffic_buckets").insert([{
+      dbWrite(supabaseDb.from("traffic_buckets").insert([{
         time: bucket.time,
         data_count: bucket.data,
         beacons_count: bucket.beacons,
@@ -1320,7 +1316,7 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
   saveAlerts(alerts);
 
   // ── Write to Insforge DB (triggers realtime broadcast to frontend) ──
-  dbWrite(db.database.from("alerts").insert([{
+  dbWrite(supabaseDb.from("alerts").insert([{
     id: newAlert.id,
     timestamp: newAlert.timestamp,
     type: newAlert.type,
@@ -1334,10 +1330,10 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
   }]), "alert insert");
 
   // Update detection_stats running totals (best-effort, non-blocking)
-  Promise.resolve(db.database.from("detection_stats").select().eq("id", 1).maybeSingle()).then(({ data }) => {
+  Promise.resolve(supabaseDb.from("detection_stats").select().eq("id", 1).maybeSingle()).then(({ data }) => {
     if (!data) return;
     const dc = { ...(data.detection_counts ?? {}), [alertData.type]: (data.detection_counts?.[alertData.type] ?? 0) + 1 };
-    dbWrite(db.database.from("detection_stats").update({
+    dbWrite(supabaseDb.from("detection_stats").update({
       detection_counts: dc,
       total_packets_processed: totalPacketsProcessed,
       updated_at: new Date().toISOString(),
@@ -1574,87 +1570,6 @@ Rules:
     res.json(mlResults);
   });
 
-  // ── InsForge Auth Proxy ───────────────────────────────────────────────────
-  // The browser can't reach the InsForge backend directly due to TLS cert
-  // verification issues on some machines. All /insforge-auth/* requests are
-  // proxied through this Express server which already has a working connection.
-  // Uses the module-level INSFORGE_BASE and INSFORGE_KEY from env.
-  const INSFORGE_ANON_KEY = INSFORGE_KEY;
-
-  // Helper: make an HTTPS request bypassing TLS cert verification
-  function httpsRequest(
-    method: string,
-    urlStr: string,
-    headers: Record<string, string>,
-    body?: string
-  ): Promise<{ status: number; headers: Record<string, string | string[]>; body: string }> {
-    return new Promise((resolve, reject) => {
-      const u = new URL(urlStr);
-      const options = {
-        hostname: u.hostname,
-        port: u.port || 443,
-        path: u.pathname + u.search,
-        method,
-        headers: { ...headers, ...(body ? { "content-length": Buffer.byteLength(body).toString() } : {}) },
-        rejectUnauthorized: false,
-      };
-      const req = https.request(options, (res) => {
-        let data = "";
-        res.on("data", (chunk) => { data += chunk; });
-        res.on("end", () => {
-          resolve({
-            status: res.statusCode ?? 502,
-            headers: res.headers as Record<string, string | string[]>,
-            body: data,
-          });
-        });
-      });
-      req.on("error", reject);
-      if (body) req.write(body);
-      req.end();
-    });
-  }
-
-  // Proxy all /insforge-auth/* → InsForge backend, bypassing browser TLS issues
-  app.all("/insforge-auth/*", async (req, res) => {
-    // Strip the /insforge-auth prefix to get the real InsForge path
-    const upstreamPath = req.path.replace(/^\/insforge-auth/, "");
-    const qs = req.url.includes("?") ? "?" + req.url.split("?").slice(1).join("?") : "";
-    const upstreamUrl = `${INSFORGE_BASE}${upstreamPath}${qs}`;
-
-    try {
-      // Forward all headers except host; add anon key if not already present
-      const forwardHeaders: Record<string, string> = { "content-type": "application/json" };
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (k.toLowerCase() === "host") continue;
-        if (k.toLowerCase() === "content-length") continue; // recalculated below
-        if (typeof v === "string") forwardHeaders[k] = v;
-        else if (Array.isArray(v)) forwardHeaders[k] = v[0];
-      }
-      if (!forwardHeaders["apikey"]) forwardHeaders["apikey"] = INSFORGE_ANON_KEY;
-      if (!forwardHeaders["x-anon-key"]) forwardHeaders["x-anon-key"] = INSFORGE_ANON_KEY;
-
-      const body = req.method !== "GET" && req.method !== "HEAD"
-        ? JSON.stringify(req.body)
-        : undefined;
-
-      const upstream = await httpsRequest(req.method, upstreamUrl, forwardHeaders, body);
-
-      // Relay status + headers (skip hop-by-hop headers)
-      const skipHeaders = new Set(["transfer-encoding", "connection", "keep-alive", "upgrade", "content-length"]);
-      res.status(upstream.status);
-      for (const [key, value] of Object.entries(upstream.headers)) {
-        if (!skipHeaders.has(key.toLowerCase())) {
-          res.setHeader(key, value);
-        }
-      }
-      res.send(upstream.body);
-    } catch (err: any) {
-      console.error("[auth-proxy] error:", err.message);
-      res.status(502).json({ error: "Auth proxy error", message: err.message });
-    }
-  });
-
   // ── User Session Management ───────────────────────────────────────────────
   // POST /api/session/register — called by frontend on login
   // Registers the user's active session so other users can see who's online
@@ -1672,7 +1587,7 @@ Rules:
     const sessionId = `${userId}-${now}`;
 
     // Upsert session — one active session per user
-    dbWrite(db.database.from("user_sessions").upsert([{
+    dbWrite(supabaseDb.from("user_sessions").upsert([{
       id: sessionId,
       user_id: userId,
       email,
@@ -1696,7 +1611,7 @@ Rules:
   app.post("/api/session/heartbeat", async (req, res) => {
     const { sessionId } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
-    dbWrite(db.database.from("user_sessions").update({
+    dbWrite(supabaseDb.from("user_sessions").update({
       last_seen_at: Date.now(),
       is_active: true,
     }).eq("id", sessionId), "session heartbeat");
@@ -1707,7 +1622,7 @@ Rules:
   app.post("/api/session/leave", async (req, res) => {
     const { sessionId, userId, email } = req.body;
     if (sessionId) {
-      dbWrite(db.database.from("user_sessions").update({ is_active: false }).eq("id", sessionId), "session leave");
+      dbWrite(supabaseDb.from("user_sessions").update({ is_active: false }).eq("id", sessionId), "session leave");
     }
     const payload = JSON.stringify({ type: "session_leave", userId, email });
     sseClients.forEach((c) => c.write(`event: session\ndata: ${payload}\n\n`));
@@ -1718,7 +1633,7 @@ Rules:
   app.get("/api/sessions/active", async (_req, res) => {
     // Sessions active in the last 60s
     const cutoff = Date.now() - 60_000;
-    const { data, error } = await db.database
+    const { data, error } = await supabaseDb
       .from("user_sessions")
       .select()
       .eq("is_active", true)
@@ -2227,7 +2142,7 @@ Rules:
     config.trustedMacs = [...trustedMacs];
     saveConfig(config);
     // Sync status to InsForge DB
-    dbWrite(db.database.from("devices").update({
+    dbWrite(supabaseDb.from("devices").update({
       status,
       updated_at: new Date().toISOString(),
     }).eq("mac", mac), "device status update");
@@ -2331,7 +2246,7 @@ Rules:
 
     // ── Clear stale dismissed/old alerts from DB on startup ──────────────────
     dbWrite(
-      db.database.from("alerts").update({ dismissed: true })
+      supabaseDb.from("alerts").update({ dismissed: true })
         .lt("timestamp", Date.now() - 86_400_000),
       "startup alert cleanup"
     );
@@ -2424,7 +2339,7 @@ Rules:
 
     // ── Sync packet count + detection stats to Insforge every 30s ──
     setInterval(() => {
-      dbWrite(db.database.from("detection_stats").update({
+      dbWrite(supabaseDb.from("detection_stats").update({
         detection_counts: detectionCounts,
         total_packets_processed: totalPacketsProcessed,
         updated_at: new Date().toISOString(),

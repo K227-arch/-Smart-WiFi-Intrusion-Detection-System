@@ -86,7 +86,7 @@ export const localAuth = {
       return null;
     }
     const data = await res.json();
-    return { id: data.user?.id ?? "", email: data.user?.email ?? "", name: data.user?.name };
+    return { id: data.user?.id ?? "", email: data.user?.email ?? "", name: data.user?.name, avatar_url: data.user?.avatar_url };
   },
 
   async signOut() {
@@ -103,19 +103,5 @@ export const localAuth = {
   getToken(): string | null { return getStoredToken(); },
 };
 
-// ── InsForge SDK (for non-auth features like database, storage) ───────────────
-import { createClient } from "@insforge/sdk";
-
-const BASE_URL = import.meta.env.VITE_INSFORGE_BASE_URL ?? "https://bh9n4s8r.us-east.insforge.app";
-const ANON_KEY = import.meta.env.VITE_INSFORGE_API_KEY ??
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODcwMTF9.2i2nCebcymH-w2vXTtlHHCtFwR3ndX_gEKHdYYzTfIo";
-
-// SDK client for cloud features (database, storage, realtime) — NOT for auth
-export const insforge = createClient({
-  baseUrl: BASE_URL,
-  anonKey: ANON_KEY,
-  timeout: 35000,
-  retryCount: 2,
-});
-
-export const insforgeData = insforge;
+// Supabase client for database operations (exported for use in hooks)
+export { supabaseClient } from "./supabase";
