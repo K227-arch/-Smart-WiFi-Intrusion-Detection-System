@@ -48,6 +48,10 @@
       {
         "from": "data",
         "to": "data"
+      },
+      {
+        "from": "installers",
+        "to": "installers"
       }
     ],
     "win": {

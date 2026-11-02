@@ -25,3 +25,6 @@ coverage/
 .roo
 .trae
 .windsurf
+
+# Bundled third-party installers (binaries — not committed to git)
+installers/*.exe

@@ -28,9 +28,9 @@ async function promptNpcapInstall(): Promise<void> {
   if (process.platform !== "win32" || checkNpcap()) return;
 
   const installerPaths = [
-    path.join(process.resourcesPath ?? "", "installers", "npcap-1.80.exe"),
-    path.join(__dirname, "..", "installers", "npcap-1.80.exe"),
-    path.join(process.cwd(), "installers", "npcap-1.80.exe"),
+    path.join(process.resourcesPath ?? "", "installers", "npcap-1.90.exe"),
+    path.join(__dirname, "..", "installers", "npcap-1.90.exe"),
+    path.join(process.cwd(), "installers", "npcap-1.90.exe"),
   ];
 
   const installer = installerPaths.find((p) => fs.existsSync(p));
