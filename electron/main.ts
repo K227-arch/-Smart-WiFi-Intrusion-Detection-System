@@ -59,20 +59,35 @@ async function promptNpcapInstall(): Promise<void> {
 // ── Start the Express/WIDS backend server ────────────────────────────────────
 function startBackend(): Promise<void> {
   return new Promise((resolve) => {
+    // In production the asar contains dist/server.cjs.
+    // Electron exposes asar contents at <resourcesPath>/app.asar/<path> via its VFS,
+    // but Node's child_process.spawn cannot execute files inside an asar.
+    // electron-builder sets app.asar.unpacked for native modules — we replicate
+    // this by checking the unpacked path first, then falling back to the asar VFS path.
+    const serverInAsar   = path.join(process.resourcesPath, "app.asar", "dist", "server.cjs");
+    const serverUnpacked = path.join(process.resourcesPath, "app.asar.unpacked", "dist", "server.cjs");
+    const serverDirect   = path.join(process.resourcesPath, "dist", "server.cjs");
+
     const serverScript = isDev
       ? path.join(__dirname, "..", "server.ts")
-      : path.join(process.resourcesPath, "app", "dist", "server.cjs");
+      : fs.existsSync(serverUnpacked) ? serverUnpacked
+      : fs.existsSync(serverDirect)   ? serverDirect
+      : serverInAsar;   // last resort — asar VFS (may fail for spawn)
 
-    const cmd = isDev ? "npx" : "node";
+    const cmd  = isDev ? "npx" : process.execPath; // use bundled Electron Node in prod
     const args = isDev ? ["tsx", serverScript] : [serverScript];
 
-    console.log(`[electron] Starting backend: ${cmd} ${args.join(" ")}`);
+    const cwd = isDev
+      ? path.join(__dirname, "..")
+      : process.resourcesPath;
+
+    console.log(`[electron] Starting backend: ${cmd} ${args.join(" ")} (cwd=${cwd})`);
 
     serverProcess = spawn(cmd, args, {
-      cwd: isDev ? path.join(__dirname, "..") : process.resourcesPath,
-      env: { ...process.env, PORT: String(SERVER_PORT) },
+      cwd,
+      env: { ...process.env, PORT: String(SERVER_PORT), ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     serverProcess.stdout?.on("data", (d) => {

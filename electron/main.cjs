@@ -40,9 +40,9 @@ function checkNpcap() {
 async function promptNpcapInstall() {
   if (process.platform !== "win32" || checkNpcap()) return;
   const installerPaths = [
-    import_path.default.join(process.resourcesPath ?? "", "installers", "npcap-1.80.exe"),
-    import_path.default.join(__dirname, "..", "installers", "npcap-1.80.exe"),
-    import_path.default.join(process.cwd(), "installers", "npcap-1.80.exe")
+    import_path.default.join(process.resourcesPath ?? "", "installers", "npcap-1.90.exe"),
+    import_path.default.join(__dirname, "..", "installers", "npcap-1.90.exe"),
+    import_path.default.join(process.cwd(), "installers", "npcap-1.90.exe")
   ];
   const installer = installerPaths.find((p) => import_fs.default.existsSync(p));
   const { response } = await import_electron.dialog.showMessageBox({
@@ -62,15 +62,19 @@ async function promptNpcapInstall() {
 }
 function startBackend() {
   return new Promise((resolve) => {
-    const serverScript = isDev ? import_path.default.join(__dirname, "..", "server.ts") : import_path.default.join(process.resourcesPath, "app", "dist", "server.cjs");
-    const cmd = isDev ? "npx" : "node";
+    const serverInAsar = import_path.default.join(process.resourcesPath, "app.asar", "dist", "server.cjs");
+    const serverUnpacked = import_path.default.join(process.resourcesPath, "app.asar.unpacked", "dist", "server.cjs");
+    const serverDirect = import_path.default.join(process.resourcesPath, "dist", "server.cjs");
+    const serverScript = isDev ? import_path.default.join(__dirname, "..", "server.ts") : import_fs.default.existsSync(serverUnpacked) ? serverUnpacked : import_fs.default.existsSync(serverDirect) ? serverDirect : serverInAsar;
+    const cmd = isDev ? "npx" : process.execPath;
     const args = isDev ? ["tsx", serverScript] : [serverScript];
-    console.log(`[electron] Starting backend: ${cmd} ${args.join(" ")}`);
+    const cwd = isDev ? import_path.default.join(__dirname, "..") : process.resourcesPath;
+    console.log(`[electron] Starting backend: ${cmd} ${args.join(" ")} (cwd=${cwd})`);
     serverProcess = (0, import_child_process.spawn)(cmd, args, {
-      cwd: isDev ? import_path.default.join(__dirname, "..") : process.resourcesPath,
-      env: { ...process.env, PORT: String(SERVER_PORT) },
+      cwd,
+      env: { ...process.env, PORT: String(SERVER_PORT), ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
-      shell: process.platform === "win32"
+      shell: false
     });
     serverProcess.stdout?.on("data", (d) => {
       const line = d.toString().trim();

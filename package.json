@@ -30,6 +30,12 @@
     "directories": {
       "output": "release"
     },
+    "asarUnpack": [
+      "dist/server.cjs",
+      "dist/server.cjs.map",
+      "node_modules/cap/**/*",
+      "node_modules/onnxruntime-node/**/*"
+    ],
     "files": [
       "electron/main.cjs",
       "electron/preload.cjs",
