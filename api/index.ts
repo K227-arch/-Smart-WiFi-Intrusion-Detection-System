@@ -11,7 +11,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Alert {
   id: string;
-  timestamp: number;
+  timestamp: string;
   type: string;
   severity: string;
   description: string;

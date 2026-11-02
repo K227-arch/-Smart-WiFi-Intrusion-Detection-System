@@ -58,4 +58,11 @@ export const ALERT_TYPE_META: Record<Alert["type"], AlertTypeMeta> = {
     bg: "bg-violet-500/10",
     border: "border-violet-500/30",
   },
+  MALWARE_DETECTED: {
+    label: "Malware Detected",
+    icon: <ShieldAlert className="w-3.5 h-3.5" />,
+    color: "text-red-500",
+    bg: "bg-red-500/10",
+    border: "border-red-500/30",
+  },
 };

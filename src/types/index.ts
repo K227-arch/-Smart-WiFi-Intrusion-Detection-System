@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 
 export interface Alert {
   id: string;
-  timestamp: number;
-  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY";
+  timestamp: string;
+  type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY" | "MALWARE_DETECTED";
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;

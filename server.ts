@@ -219,12 +219,12 @@ interface WiFiPacket {
 
 interface Alert {
   id: string;
-  timestamp: number;
+  timestamp: string;
   type: "ROGUE_AP" | "DEAUTH_ATTACK" | "MAC_SPOOFING" | "UNAUTHORIZED_DEVICE" | "CHANNEL_ANOMALY" | "PORT_SCAN" | "BRUTE_FORCE" | "ANOMALY" | "MALWARE_DETECTED";
   severity: "high" | "medium" | "low";
   description: string;
   targetMac: string;
-  targetIp?: string;   // preferred display — IP of attacker/flagged host
+  targetIp?: string;
   details: any;
 }
 
@@ -285,7 +285,7 @@ function loadAlerts(): Alert[] {
       const data: Alert[] = JSON.parse(fs.readFileSync(ALERTS_FILE, "utf-8"));
       // Only keep alerts from the last 24 hours
       const cutoff = Date.now() - 86_400_000;
-      return data.filter((a) => a.timestamp > cutoff);
+      return data.filter((a) => new Date(a.timestamp).getTime() > cutoff);
     }
   } catch (e) {
     console.warn("Could not load alerts:", e);
@@ -1111,8 +1111,8 @@ const detectionEngine = {
       // ── Write new device to Insforge (upsert to handle restarts) ──
       dbWrite(supabaseDb.from("devices").upsert([{
         mac: newDevice.mac,
-        first_seen: newDevice.firstSeen,
-        last_seen: newDevice.lastSeen,
+        first_seen: new Date(newDevice.firstSeen).toISOString(),
+        last_seen: new Date(newDevice.lastSeen).toISOString(),
         status: newDevice.status,
         ssid: newDevice.ssid ?? null,
         avg_signal: newDevice.avgSignal,
@@ -1257,7 +1257,7 @@ const detectionEngine = {
       devices.set(packet.sourceMac, newDevice);
       broadcastDevice(newDevice);
       dbWrite(supabaseDb.from("devices").upsert([{
-        mac: newDevice.mac, first_seen: newDevice.firstSeen, last_seen: newDevice.lastSeen,
+        mac: newDevice.mac, first_seen: new Date(newDevice.firstSeen).toISOString(), last_seen: new Date(newDevice.lastSeen).toISOString(),
         status: newDevice.status, ssid: null, avg_signal: newDevice.avgSignal,
         ip_address: newDevice.ipAddress ?? null, hostname: null,
       }]), "device upsert");
@@ -1275,8 +1275,10 @@ function updateTrafficBucket(packet: WiFiPacket) {
       // ── Persist completed bucket to Insforge ──
       const bucket = currentBucket;
       dbWrite(supabaseDb.from("traffic_buckets").insert([{
-        time: bucket.time,
+        time: new Date(bucketStartTime).toISOString(),
+        device_mac: null,
         data_count: bucket.data,
+        byte_count: 0,
         beacons_count: bucket.beacons,
         deauth_count: bucket.deauth,
         mgmt_count: bucket.mgmt,
@@ -1299,14 +1301,14 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
     (a) =>
       a.type === alertData.type &&
       a.targetMac === alertData.targetMac &&
-      Date.now() - a.timestamp < dedupWindowMs
+      Date.now() - new Date(a.timestamp).getTime() < dedupWindowMs
   );
   if (recent) return;
 
   const newAlert: Alert = {
     ...alertData,
     id: Math.random().toString(36).substr(2, 9),
-    timestamp: Date.now(),
+    timestamp: new Date().toISOString(),
   };
   alerts.unshift(newAlert);
   if (alerts.length > 200) alerts.pop();
@@ -1595,8 +1597,8 @@ Rules:
       avatar_url: avatarUrl ?? null,
       ip_address: ip,
       subnet,
-      connected_at: now,
-      last_seen_at: now,
+      connected_at: new Date(now).toISOString(),
+      last_seen_at: new Date(now).toISOString(),
       is_active: true,
     }]), "session register");
 
@@ -1612,7 +1614,7 @@ Rules:
     const { sessionId } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
     dbWrite(supabaseDb.from("user_sessions").update({
-      last_seen_at: Date.now(),
+      last_seen_at: new Date().toISOString(),
       is_active: true,
     }).eq("id", sessionId), "session heartbeat");
     res.json({ ok: true });
@@ -2416,12 +2418,78 @@ function hashPassword(password: string, salt: string): Promise<string> {
 }
 function generateOtp(): string { return String(crypto.randomInt(100000, 999999)); }
 function generateToken(): string { return crypto.randomBytes(32).toString("hex"); }
+
+// Only print OTP to console in non-production (task 4)
 function printOtp(email: string, otp: string) {
+  if (process.env.NODE_ENV === "production") return;
   const padded = email.padEnd(22);
   console.log(`\n╔══════════════════════════════════════╗`);
   console.log(`║  2FA CODE for ${padded}║`);
-  console.log(`║  OTP: ${otp}  (expires in 10 min)   ║`);
+  console.log(`║  OTP: [REDACTED]  (expires 10 min)  ║`);
   console.log(`╚══════════════════════════════════════╝\n`);
+}
+
+// ── SMTP startup check (task 6) ───────────────────────────────────────────────
+function checkSmtpConfig() {
+  const required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    console.warn(`⚠ SMTP not fully configured — missing: ${missing.join(", ")}`);
+    console.warn("  OTP codes will be shown in the login UI instead of emailed.");
+    console.warn("  Set these variables in .env.local to enable email delivery.");
+  } else {
+    console.log(`✓ SMTP configured (host=${process.env.SMTP_HOST}, port=${process.env.SMTP_PORT}, user=${process.env.SMTP_USER})`);
+  }
+}
+
+// ── Email delivery via SMTP (nodemailer) ──────────────────────────────────────
+// Reads: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM from .env.local
+// Gmail: host=smtp.gmail.com port=587 — uses STARTTLS (secure:false + requireTLS:true)
+// Fails loudly on transport errors; NEVER logs the password or the OTP value.
+async function sendOtpEmail(toEmail: string, _otp: string): Promise<void> {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT ?? "587");
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.SMTP_FROM ?? `SALAMANDA WIDS <${user}>`;
+
+  if (!host || !user || !pass) {
+    // Silently skip — startup check already warned
+    return;
+  }
+
+  try {
+    const nodemailer = await import("nodemailer");
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,          // true only for port 465 (SSL)
+      requireTLS: port === 587,      // enforce STARTTLS on port 587
+      auth: { user, pass },
+      tls: { rejectUnauthorized: true }, // verify TLS cert in production
+    });
+
+    await transporter.sendMail({
+      from,
+      to: toEmail,
+      subject: "Your SALAMANDA WIDS verification code",
+      text: `Your verification code is: ${_otp}\n\nThis code expires in 10 minutes.\n\nIf you did not request this, please ignore this email.`,
+      html: `
+        <div style="font-family:sans-serif;max-width:440px;margin:auto;padding:28px 24px;background:#0f172a;color:#f1f5f9;border-radius:14px;">
+          <h2 style="color:#f59e0b;margin:0 0 6px;">🛡️ SALAMANDA WIDS</h2>
+          <p style="color:#94a3b8;margin:0 0 24px;font-size:14px;">Use the code below to verify your identity:</p>
+          <div style="background:#1e293b;border:1px solid rgba(245,158,11,0.25);border-radius:10px;padding:22px;text-align:center;margin-bottom:20px;">
+            <span style="font-size:42px;font-family:monospace;font-weight:900;letter-spacing:0.35em;color:#fbbf24;">${_otp}</span>
+          </div>
+          <p style="color:#64748b;font-size:12px;margin:0;">Expires in 10 minutes. If you didn't request this, you can safely ignore it.</p>
+        </div>
+      `,
+    });
+    console.log(`✓ OTP email dispatched to ${toEmail}`);
+  } catch (e: any) {
+    // Log only the error message — never the password or OTP value
+    console.error(`✗ OTP email failed: ${e.message ?? String(e)}`);
+  }
 }
 
 function requireLocalAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -2434,7 +2502,12 @@ function requireLocalAuth(req: express.Request, res: express.Response, next: exp
   next();
 }
 
+// isDev: controls whether devOtp is included in API responses (task 4)
+const isDev = process.env.NODE_ENV !== "production";
+
 function setupLocalAuth(app: express.Express) {
+  checkSmtpConfig();
+
   // POST /api/local-auth/signup
   app.post("/api/local-auth/signup", async (req, res) => {
     const { email, password, name } = req.body ?? {};
@@ -2462,8 +2535,13 @@ function setupLocalAuth(app: express.Express) {
     const otp = generateOtp();
     pendingOtps.set(newUser.email, { email: newUser.email, otp, expiresAt: Date.now() + OTP_EXPIRY_MS, purpose: "signup" });
     printOtp(newUser.email, otp);
+    sendOtpEmail(newUser.email, otp).catch(() => {});
 
-    res.json({ requireEmailVerification: true, email: newUser.email, devOtp: otp });
+    res.json({
+      requireEmailVerification: true,
+      email: newUser.email,
+      ...(isDev && { devOtp: otp }),   // only exposed outside production
+    });
   });
 
   // POST /api/local-auth/signin
@@ -2473,7 +2551,13 @@ function setupLocalAuth(app: express.Express) {
 
     const users = loadUsers();
     const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
-    if (!user) return res.status(401).json({ error: "Invalid email or password" });
+
+    // Constant-time response — same message whether user exists or not (task 5)
+    if (!user) {
+      // Run a dummy hash to prevent timing attacks leaking existence
+      await hashPassword(password, crypto.randomBytes(16).toString("hex"));
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
 
     const hash = await hashPassword(password, user.passwordSalt);
     if (hash !== user.passwordHash) return res.status(401).json({ error: "Invalid email or password" });
@@ -2481,8 +2565,13 @@ function setupLocalAuth(app: express.Express) {
     const otp = generateOtp();
     pendingOtps.set(user.email, { email: user.email, otp, expiresAt: Date.now() + OTP_EXPIRY_MS, purpose: "signin" });
     printOtp(user.email, otp);
+    sendOtpEmail(user.email, otp).catch(() => {});
 
-    res.json({ requireOtp: true, email: user.email, devOtp: otp });
+    res.json({
+      requireOtp: true,
+      email: user.email,
+      ...(isDev && { devOtp: otp }),
+    });
   });
 
   // POST /api/local-auth/verify-otp
@@ -2515,19 +2604,26 @@ function setupLocalAuth(app: express.Express) {
   });
 
   // POST /api/local-auth/resend-otp
+  // Returns same generic response whether or not the account exists (task 5)
   app.post("/api/local-auth/resend-otp", (req, res) => {
     const { email } = req.body ?? {};
     if (!email) return res.status(400).json({ error: "email required" });
 
     const users = loadUsers();
     const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
-    if (!user) return res.status(404).json({ error: "No account found for this email" });
+
+    // Always reply success to avoid leaking whether an account exists
+    if (!user) return res.json({ sent: true });
 
     const otp = generateOtp();
     pendingOtps.set(user.email, { email: user.email, otp, expiresAt: Date.now() + OTP_EXPIRY_MS, purpose: "signin" });
     printOtp(user.email, otp);
+    sendOtpEmail(user.email, otp).catch(() => {});
 
-    res.json({ sent: true, email: user.email, devOtp: otp });
+    res.json({
+      sent: true,
+      ...(isDev && { devOtp: otp }),
+    });
   });
 
   // GET /api/local-auth/me
