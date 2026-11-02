@@ -2088,20 +2088,45 @@ Rules:
   // GET /api/alerts
   app.get("/api/alerts", (_req, res) => res.json(alerts));
 
-  // DELETE /api/alerts/:id  — dismiss a single alert (counts as false positive)
-  app.delete("/api/alerts/:id", (req, res) => {
-    const { id } = req.params;
+  // Shared dismiss handler — used by both DELETE and POST /dismiss
+  function dismissAlertById(id: string): { ok: boolean; removed?: Alert } {
     const idx = alerts.findIndex((a) => a.id === id);
-    if (idx === -1) return res.status(404).json({ error: "Alert not found" });
+    if (idx === -1) return { ok: false };
     const [removed] = alerts.splice(idx, 1);
     falsePositiveCounts[removed.type] = (falsePositiveCounts[removed.type] || 0) + 1;
+    dbWrite(supabaseDb.from("alerts").update({ dismissed: true }).eq("id", id), "alert dismiss");
     saveAlerts(alerts);
+    return { ok: true, removed };
+  }
+
+  // DELETE /api/alerts/:id — dismiss a single alert (legacy / REST style)
+  app.delete("/api/alerts/:id", (req, res) => {
+    const { id } = req.params;
+    const result = dismissAlertById(id);
+    if (!result.ok) return res.status(404).json({ error: "Alert not found" });
     res.json({ message: "Alert dismissed", id });
   });
 
-  // DELETE /api/alerts — clear all alerts
+  // POST /api/alerts/:id/dismiss — dismiss a single alert (frontend style)
+  app.post("/api/alerts/:id/dismiss", (req, res) => {
+    const { id } = req.params;
+    const result = dismissAlertById(id);
+    if (!result.ok) return res.status(404).json({ error: "Alert not found" });
+    res.json({ message: "Alert dismissed", id });
+  });
+
+  // DELETE /api/alerts — clear all alerts (legacy / REST style)
   app.delete("/api/alerts", (_req, res) => {
     alerts = [];
+    dbWrite(supabaseDb.from("alerts").update({ dismissed: true }).eq("dismissed", false), "alerts clear");
+    saveAlerts(alerts);
+    res.json({ message: "All alerts cleared" });
+  });
+
+  // POST /api/alerts/clear — clear all alerts (frontend style)
+  app.post("/api/alerts/clear", (_req, res) => {
+    alerts = [];
+    dbWrite(supabaseDb.from("alerts").update({ dismissed: true }).eq("dismissed", false), "alerts clear");
     saveAlerts(alerts);
     res.json({ message: "All alerts cleared" });
   });

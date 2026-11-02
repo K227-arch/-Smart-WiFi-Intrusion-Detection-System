@@ -214,27 +214,30 @@ app.get("/api/alerts", async (_req, res) => {
   res.json(data ?? []);
 });
 
-// ── DELETE /api/alerts/:id ────────────────────────────────────────────────────
-app.delete("/api/alerts/:id", async (req, res) => {
-  const { id } = req.params;
+// ── DELETE /api/alerts/:id ───────────────────────────────────────────────────
+async function dismissAlertById(id: string, res: any) {
   const { data: alert } = await supabase.from("alerts").select("type").eq("id", id).maybeSingle();
   if (!alert) return res.status(404).json({ error: "Alert not found" });
-
   await supabase.from("alerts").update({ dismissed: true }).eq("id", id);
-
   const { data: stats } = await supabase.from("detection_stats").select().eq("id", 1).maybeSingle();
   if (stats) {
     const fp = { ...(stats.false_positive_counts ?? {}), [alert.type]: (stats.false_positive_counts?.[alert.type] ?? 0) + 1 };
     await supabase.from("detection_stats").update({ false_positive_counts: fp }).eq("id", 1);
   }
   res.json({ message: "Alert dismissed", id });
-});
+}
+app.delete("/api/alerts/:id", async (req, res) => dismissAlertById(req.params.id, res));
+// POST /api/alerts/:id/dismiss — frontend style alias
+app.post("/api/alerts/:id/dismiss", async (req, res) => dismissAlertById(req.params.id, res));
 
 // ── DELETE /api/alerts — clear all ───────────────────────────────────────────
-app.delete("/api/alerts", async (_req, res) => {
+async function clearAllAlerts(res: any) {
   await supabase.from("alerts").update({ dismissed: true }).eq("dismissed", false);
   res.json({ message: "All alerts cleared" });
-});
+}
+app.delete("/api/alerts", async (_req, res) => clearAllAlerts(res));
+// POST /api/alerts/clear — frontend style alias
+app.post("/api/alerts/clear", async (_req, res) => clearAllAlerts(res));
 
 // ── GET /api/devices ──────────────────────────────────────────────────────────
 app.get("/api/devices", async (_req, res) => {

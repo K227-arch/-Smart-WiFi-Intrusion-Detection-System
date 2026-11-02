@@ -49,7 +49,7 @@ export function IncidentTimeline({ alerts, onExport }: IncidentTimelineProps) {
                     {alert.severity === "high" ? "Critical" : "Warning"}
                   </span>
                   <span className="text-[9px] text-slate-500 font-mono">
-                    {format(alert.timestamp, "HH:mm:ss")}
+                    {format(new Date(alert.timestamp), "HH:mm:ss")}
                   </span>
                 </div>
                 <div className={cn("text-xs font-semibold", meta.color)}>{meta.label}</div>

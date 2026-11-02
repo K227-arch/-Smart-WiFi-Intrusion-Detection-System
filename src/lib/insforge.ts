@@ -102,6 +102,3 @@ export const localAuth = {
 
   getToken(): string | null { return getStoredToken(); },
 };
-
-// Supabase client for database operations (exported for use in hooks)
-export { supabaseClient } from "./supabase";

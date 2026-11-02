@@ -157,7 +157,7 @@ export function AlertsTab({ alerts, onExport, onDismiss, onClearAll }: AlertsTab
                         {a.targetMac}
                       </td>
                       <td className="px-4 py-3 font-mono text-slate-500 text-[10px] whitespace-nowrap">
-                        {format(a.timestamp, "MMM dd HH:mm:ss")}
+                        {format(new Date(a.timestamp), "MMM dd HH:mm:ss")}
                       </td>
                       <td className="px-4 py-3 text-center">
                         <button
