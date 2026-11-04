@@ -6,7 +6,7 @@ import { createServer as createViteServer } from "vite";
 // onnxruntime-node is optional — load dynamically so missing native binary doesn't crash startup
 let ort: typeof import("onnxruntime-node") | null = null;
 async function loadOrt() {
-  try { ort = await import("onnxruntime-node"); } catch { console.warn("⚠ onnxruntime-node unavailable — ML scoring disabled"); }
+  try { ort = await import("onnxruntime-node"); console.log("✓ onnxruntime-node loaded"); } catch (e: any) { console.warn("⚠ onnxruntime-node unavailable — ML scoring disabled:", e?.message ?? e); }
 }
 import { PacketCaptureEngine, type CapturedPacket } from "./src/capture/packetCapture";
 import { NetworkAnalyzer, type NetworkAlert, addOwnIp } from "./src/capture/networkAnalyzer";
@@ -2274,7 +2274,7 @@ Rules:
     // ── Clear stale dismissed/old alerts from DB on startup ──────────────────
     dbWrite(
       supabaseDb.from("alerts").update({ dismissed: true })
-        .lt("timestamp", Date.now() - 86_400_000),
+        .lt("timestamp", new Date(Date.now() - 86_400_000).toISOString()),
       "startup alert cleanup"
     );
 
@@ -2807,5 +2807,4 @@ function registerExtendedRoutes(app: import("express").Express) {
 // POST /api/tools/traceroute
 
 startServer();
-loadOrt();
-loadOnnxModel();
+loadOrt().then(() => loadOnnxModel());
