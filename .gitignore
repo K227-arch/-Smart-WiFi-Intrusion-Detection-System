@@ -28,3 +28,14 @@ coverage/
 
 # Bundled third-party installers (binaries — not committed to git)
 installers/*.exe
+
+# Runtime data — ships as empty files, populated at runtime per-user
+# These are gitignored after initial commit to avoid committing user data
+# Tracked as empty seed files only
+
+# Logs and build artifacts that shouldn't be in source control
+server.err
+salamanda-wids.zip
+
+# Supabase temp files (local link state — not needed by other devs)
+supabase/.temp/
