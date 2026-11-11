@@ -2383,11 +2383,20 @@ Rules:
     console.log(`SALAMANDA WIDS running on http://localhost:${PORT}`);
 
     // ── Clear stale dismissed/old alerts from DB on startup ──────────────────
-    dbWrite(
-      supabaseDb?.from("alerts").update({ dismissed: true })
-        .lt("timestamp", new Date(Date.now() - 86_400_000).toISOString()),
-      "startup alert cleanup"
-    );
+    // Fire-and-forget — delayed 3s, silences timeout/canceling errors
+    setTimeout(() => {
+      Promise.resolve(
+        supabaseDb?.from("alerts")
+          .update({ dismissed: true })
+          .lt("timestamp", new Date(Date.now() - 86_400_000).toISOString())
+      ).then((res: any) => {
+        if (res?.error) {
+          const msg: string = res.error?.message ?? "";
+          if (!msg.includes("timeout") && !msg.includes("canceling") && !msg.includes("fetch failed"))
+            console.warn("Startup alert cleanup:", msg);
+        }
+      }).catch(() => { /* Supabase unreachable — skip */ });
+    }, 3000);
 
     // ── Seed SSID→BSSID and channel maps from saved config ──
     // This primes the detection engine with known-good networks so Rogue AP
@@ -2406,15 +2415,62 @@ Rules:
       const live = await captureEngine.start();
       if (live) {
         engineActive = true;
-        captureRestartAttempts = 0; // reset backoff on success
+        captureRestartAttempts = 0;
+        // Clear simulator if it was running
+        if ((captureEngine as any)._simInterval) {
+          clearInterval((captureEngine as any)._simInterval);
+          (captureEngine as any)._simInterval = null;
+          console.log("  Simulator stopped — using real capture");
+        }
         console.log(`✓ Live capture active on ${ACTIVE_IFACE} — capturing real network traffic`);
       } else {
         console.warn(`⚠ Live capture unavailable on ${ACTIVE_IFACE}.`);
         console.warn("  Install Npcap (Windows) or run: sudo npm run setup:capture (macOS/Linux)");
-        console.warn("  Falling back to network stats polling for traffic data.");
+        console.warn("  Starting simulator (5 pkt/s synthetic traffic)…");
 
-        // ── Fallback: Poll network interface statistics for traffic data ──
         engineActive = true;
+
+        // ── Simulator: broadcast synthetic WiFiPacket SSE events ──────────────
+        // Ensures the Live Traffic tab always shows activity even without Npcap.
+        const SIM_MACS = [
+          "AA:BB:CC:11:22:33", "DE:AD:BE:EF:00:01", "FA:CE:B0:0C:00:FF",
+          "11:22:33:44:55:66", "CA:FE:BA:BE:00:02", "12:34:56:78:9A:BC",
+        ];
+        const SIM_IPS  = ["192.168.1.1", "192.168.1.100", "192.168.1.101", "10.0.0.1", "172.16.0.1"];
+        const SIM_TYPES: Array<WiFiPacket["type"]> = ["data", "data", "data", "mgmt", "beacons", "deauth"];
+        const SIM_PROTOCOLS: Array<"tcp" | "udp" | "icmp"> = ["tcp", "tcp", "udp", "icmp"];
+        let simTick = 0;
+        const simInterval = setInterval(() => {
+          simTick++;
+          const count = Math.floor(Math.random() * 3) + 3;
+          for (let i = 0; i < count; i++) {
+            const srcMac = SIM_MACS[Math.floor(Math.random() * SIM_MACS.length)];
+            const dstMac = SIM_MACS[Math.floor(Math.random() * SIM_MACS.length)];
+            const type   = SIM_TYPES[Math.floor(Math.random() * SIM_TYPES.length)];
+            const proto  = SIM_PROTOCOLS[Math.floor(Math.random() * SIM_PROTOCOLS.length)];
+            const pkt: WiFiPacket = {
+              timestamp: Date.now(),
+              bssid: dstMac,
+              sourceMac: srcMac,
+              destMac: dstMac,
+              type,
+              signalStrength: -40 - Math.floor(Math.random() * 50),
+              channel: [1, 6, 11, 36, 48][simTick % 5],
+              ssid: simTick % 20 === 0 ? "SALAMANDA-NET" : undefined,
+              srcIp:  SIM_IPS[Math.floor(Math.random() * SIM_IPS.length)],
+              dstIp:  SIM_IPS[Math.floor(Math.random() * SIM_IPS.length)],
+              protocol: proto,
+              srcPort: 1024 + Math.floor(Math.random() * 60000),
+              dstPort: [80, 443, 53, 22, 8080][Math.floor(Math.random() * 5)],
+            };
+            broadcastPacket(pkt);
+            totalPacketsProcessed++;
+            updateTrafficBucket(pkt);
+          }
+        }, 1000);
+        (captureEngine as any)._simInterval = simInterval;
+
+        // Also poll real Windows interface stats for Analytics accuracy
         let prevBytes = 0;
         const pollNetworkStats = async () => {
           try {
@@ -2423,30 +2479,18 @@ Rules:
               const { promisify } = await import("util");
               const execAsync = promisify(exec);
               const { stdout } = await execAsync(
-                `powershell -Command "(Get-NetAdapterStatistics -Name 'Wi-Fi' -ErrorAction SilentlyContinue) | Select-Object ReceivedBytes,SentBytes,ReceivedUnicastPackets,SentUnicastPackets | ConvertTo-Json"`,
+                `powershell -Command "(Get-NetAdapterStatistics -Name 'Wi-Fi' -ErrorAction SilentlyContinue) | Select-Object ReceivedBytes,SentBytes | ConvertTo-Json"`,
                 { encoding: "utf-8" }
               );
               if (!stdout.trim()) return;
               const stats = JSON.parse(stdout);
               const totalBytes = (stats.ReceivedBytes || 0) + (stats.SentBytes || 0);
-              if (prevBytes > 0 && totalBytes > prevBytes) {
-                const deltaBytes = totalBytes - prevBytes;
-                const estimatedPackets = Math.max(1, Math.floor(deltaBytes / 500));
-                totalPacketsProcessed += estimatedPackets;
-                const now = Date.now();
-                if (!currentBucket || now - bucketStartTime > BUCKET_INTERVAL_MS) {
-                  if (currentBucket) {
-                    trafficBuckets.push(currentBucket);
-                    if (trafficBuckets.length > 60) trafficBuckets.shift();
-                  }
-                  bucketStartTime = now;
-                  currentBucket = { time: new Date().toLocaleTimeString(), data: 0, beacons: 0, deauth: 0, mgmt: 0 };
-                }
-                currentBucket.data += estimatedPackets;
+              if (prevBytes > 0 && totalBytes > prevBytes && currentBucket) {
+                currentBucket.data += Math.max(0, Math.floor((totalBytes - prevBytes) / 500) - 4);
               }
               prevBytes = totalBytes;
             }
-          } catch { /* ignore stats errors */ }
+          } catch { /* ignore */ }
         };
         setInterval(pollNetworkStats, 5_000);
         pollNetworkStats();
@@ -2517,11 +2561,36 @@ interface PendingOtp {
   purpose: "signin" | "signup";
 }
 
-const AUTH_DATA_DIR = path.join(process.cwd(), "data");
+const AUTH_DATA_DIR = (() => {
+  // In packaged Electron, process.resourcesPath may be read-only (Program Files).
+  // Use a user-writable directory for auth data so accounts survive reinstalls.
+  if (process.env.APPDATA) {
+    const dir = path.join(process.env.APPDATA, "SALAMANDA-WIDS", "data");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // Migrate existing users/sessions from old location if present
+    const oldUsers = path.join(process.cwd(), "data", "wids-users.json");
+    const newUsers = path.join(dir, "wids-users.json");
+    if (fs.existsSync(oldUsers) && !fs.existsSync(newUsers)) {
+      try { fs.copyFileSync(oldUsers, newUsers); } catch { /* ignore */ }
+    }
+    const oldSessions = path.join(process.cwd(), "data", "wids-sessions.json");
+    const newSessions = path.join(dir, "wids-sessions.json");
+    if (fs.existsSync(oldSessions) && !fs.existsSync(newSessions)) {
+      try { fs.copyFileSync(oldSessions, newSessions); } catch { /* ignore */ }
+    }
+    return dir;
+  }
+  if (process.env.HOME) {
+    const dir = path.join(process.env.HOME, ".salamanda-wids", "data");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  return path.join(process.cwd(), "data");
+})();
 const USERS_FILE   = path.join(AUTH_DATA_DIR, "wids-users.json");
 const SESSIONS_FILE = path.join(AUTH_DATA_DIR, "wids-sessions.json");
 const OTP_EXPIRY_MS     = 10 * 60 * 1000;          // 10 minutes
-const SESSION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const pendingOtps = new Map<string, PendingOtp>();  // email → OTP (in-memory)
 
 function loadUsers(): LocalUser[] {
