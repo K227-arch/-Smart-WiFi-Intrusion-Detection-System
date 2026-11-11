@@ -194,6 +194,8 @@ jobs:
         with:
           name: SALAMANDA WIDS Desktop ${{ github.ref_name }}
           body: |
+            ![SALAMANDA WIDS](https://github.com/${{ github.repository_owner }}/-Smart-WiFi-Intrusion-Detection-System/releases/download/${{ github.ref_name }}/icon.png)
+
             ## SALAMANDA WIDS ${{ github.ref_name }} — Desktop Application
 
             ### Downloads
@@ -233,5 +235,6 @@ jobs:
             artifacts/salamanda-wids-linux/*.AppImage
             artifacts/salamanda-wids-linux/*.deb
             artifacts/salamanda-wids-macos/*.dmg
+            public/icon.png
           draft: false
           prerelease: false
