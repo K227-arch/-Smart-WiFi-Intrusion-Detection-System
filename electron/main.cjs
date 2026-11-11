@@ -33,6 +33,34 @@ var SERVER_URL = `http://localhost:${SERVER_PORT}`;
 var mainWindow = null;
 var tray = null;
 var serverProcess = null;
+function ensureEnvFile() {
+  const envDir = isDev ? import_path.default.join(__dirname, "..") : process.resourcesPath ?? "";
+  const envPath = import_path.default.join(envDir, ".env.local");
+  const templatePath = import_path.default.join(envDir, ".env.template");
+  if (import_fs.default.existsSync(envPath)) return;
+  if (import_fs.default.existsSync(templatePath)) {
+    try {
+      import_fs.default.copyFileSync(templatePath, envPath);
+      console.log("[electron] Created .env.local from template");
+      return;
+    } catch (e) {
+      console.warn("[electron] Could not copy .env.template:", e);
+    }
+  }
+  const minimal = [
+    "SUPABASE_URL=https://kuntnvlvyuqetiorvlve.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY=sb_publishable_pEeWmRrCl_NB77xSmIkenA_J3srWmtZ",
+    "SUPABASE_SECRET_KEY=",
+    "CAPTURE_IFACE=Wi-Fi",
+    ""
+  ].join("\n");
+  try {
+    import_fs.default.writeFileSync(envPath, minimal);
+    console.log("[electron] Created minimal .env.local");
+  } catch (e) {
+    console.warn("[electron] Could not write .env.local:", e);
+  }
+}
 function checkNpcap() {
   if (process.platform !== "win32") return true;
   return import_fs.default.existsSync("C:\\Program Files\\Npcap\\NPFInstall.exe");
@@ -146,6 +174,7 @@ function getAppIcon() {
 import_electron.app.whenReady().then(async () => {
   if (process.platform === "darwin") import_electron.app.dock?.hide();
   await promptNpcapInstall();
+  ensureEnvFile();
   await startBackend();
   createWindow();
   createTray();
