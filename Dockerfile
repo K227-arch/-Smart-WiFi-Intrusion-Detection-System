@@ -9,7 +9,7 @@
 #   docker compose up -d  → runs in simulator mode (synthetic traffic)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+# ── Stage 1: Builder (compile frontend + server bundle) ───────────────────────
 FROM node:20-slim AS builder
 
 WORKDIR /app
@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ALL dependencies (including devDeps) for the build step
+# --ignore-scripts avoids downloading electron/onnxruntime prebuilt binaries
+# (we only need the JS source for Vite/esbuild bundling, not native addons)
 COPY package*.json ./
 RUN npm ci --ignore-scripts
 
@@ -27,22 +29,7 @@ RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build && npm run build:server
 
-# ── Stage 2: Native module compiler ──────────────────────────────────────────
-# Rebuilds optional native addons (cap, onnxruntime-node) for the target arch
-FROM node:20-slim AS native-builder
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ libpcap-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY package*.json ./
-# Install ONLY optional native deps — cap and onnxruntime-node
-RUN npm ci --omit=dev --ignore-scripts \
- && npm rebuild cap onnxruntime-node --update-binary 2>/dev/null || true
-
-# ── Stage 3: Production runner ────────────────────────────────────────────────
+# ── Stage 2: Production runner ───────────────────────────────────────────────
 FROM node:20-slim AS runner
 
 LABEL org.opencontainers.image.title="SALAMANDA WIDS" \
@@ -66,13 +53,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap0.8 libcap2-bin wget iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Production npm deps (no devDeps)
-COPY package*.json ./
-RUN npm ci --omit=dev --ignore-scripts
+# Install production deps INCLUDING optional native modules (cap, onnxruntime-node)
+# --ignore-scripts=false lets cap compile against libpcap-dev headers
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ libpcap-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy native module binaries built in native-builder stage
-COPY --from=native-builder /app/node_modules/cap ./node_modules/cap
-COPY --from=native-builder /app/node_modules/onnxruntime-node ./node_modules/onnxruntime-node
+COPY package*.json ./
+RUN npm ci --omit=dev
 
 # Copy built artifacts from builder
 COPY --from=builder /app/dist ./dist

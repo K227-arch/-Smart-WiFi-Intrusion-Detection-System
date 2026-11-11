@@ -10,21 +10,11 @@
 set -e
 
 # ── 1. Packet Capture Capabilities ───────────────────────────────────────────
-# Try to grant NET_RAW+NET_ADMIN to the node binary so the app can open raw
-# sockets without running as root. This requires the container to have been
-# started with --cap-add=NET_RAW --cap-add=NET_ADMIN (or equivalent).
-# Silently skips when capabilities are unavailable (Windows/macOS Docker Desktop).
-NODE_BIN=$(command -v node 2>/dev/null || true)
-if [ -n "$NODE_BIN" ] && command -v setcap >/dev/null 2>&1; then
-  NODE_REAL=$(readlink -f "$NODE_BIN" 2>/dev/null || echo "$NODE_BIN")
-  if setcap cap_net_raw,cap_net_admin=eip "$NODE_REAL" 2>/dev/null; then
-    echo "✓ Live capture capabilities granted to node"
-  else
-    echo "⚠  Could not set capabilities on node — live capture may be unavailable."
-    echo "   Add --cap-add=NET_RAW --cap-add=NET_ADMIN to docker run, or use:"
-    echo "   docker compose -f docker-compose.yml -f docker-compose.override.yml up"
-  fi
-fi
+# When the container is started with --cap-add=NET_RAW --cap-add=NET_ADMIN
+# (see docker-compose.override.yml), root inside the container already has
+# those capabilities — no setcap needed.
+# We only apply setcap when running as a non-root user (future enhancement).
+echo "ℹ  Running as $(id -u 2>/dev/null || echo 'root') — packet capture uses container capabilities."
 
 # ── 2. Environment validation ─────────────────────────────────────────────────
 # Supabase DB sync (optional — app runs fully local without it)
