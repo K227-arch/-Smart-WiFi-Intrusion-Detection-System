@@ -3,7 +3,7 @@
   "private": true,
   "version": "2.1.0",
   "description": "Smart WiFi Intrusion Detection System",
-  "author": "SALAMANDA Team",
+  "author": "SALAMANDA Team <team@salamanda.dev>",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
