@@ -65,8 +65,7 @@
       },
       {
         "from": ".env.local",
-        "to": ".env.local",
-        "optional": true
+        "to": ".env.local"
       }
     ],
     "win": {

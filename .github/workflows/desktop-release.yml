@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -53,14 +53,10 @@ jobs:
         run: npx tsc -p electron/tsconfig.json
 
       - name: Build Electron app (NSIS installer)
-        run: npx electron-builder --win --config.win.target=nsis
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --config.win.target=nsis --publish never
 
       - name: Build Electron app (portable)
-        run: npx electron-builder --win --config.win.target=portable
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --config.win.target=portable --publish never
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -83,7 +79,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -111,9 +107,7 @@ jobs:
         run: npx tsc -p electron/tsconfig.json
 
       - name: Build Electron app (AppImage + deb)
-        run: npx electron-builder --linux
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --publish never
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -137,7 +131,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -165,9 +159,7 @@ jobs:
         run: npx tsc -p electron/tsconfig.json
 
       - name: Build Electron app (DMG)
-        run: npx electron-builder --mac
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --mac --publish never
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
