@@ -1,7 +1,7 @@
 {
   "name": "salamanda-wids",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Smart WiFi Intrusion Detection System",
   "author": "SALAMANDA Team <team@salamanda.dev>",
   "type": "module",
