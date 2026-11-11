@@ -1,38 +1,47 @@
 services:
   salamanda-wids:
+    image: ghcr.io/k227-arch/salamanda-wids:latest
     build:
       context: .
       dockerfile: Dockerfile
     container_name: salamanda-wids
     ports:
-      - "3001:3000"
+      - "${PORT:-3001}:3000"
     environment:
       NODE_ENV: production
       HOST: "0.0.0.0"
+      PORT: "3000"
+      # Supabase DB sync (optional)
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      # Gemini AI terminal agent (optional)
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # App URL shown in emails/OTP
       APP_URL: ${APP_URL:-http://localhost:3001}
-      # Network interface for live packet capture (Linux only)
-      # Set CAPTURE_IFACE=wlan0 or your interface name
+      # Network interface for live capture (Linux only — see docker-compose.override.yml)
       CAPTURE_IFACE: ${CAPTURE_IFACE:-eth0}
-      # BPF filter for captured traffic (optional)
       CAPTURE_FILTER: ${CAPTURE_FILTER:-}
+      # SMTP for OTP email delivery (optional)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     env_file:
-      - .env
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/status"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 25s
     volumes:
+      # Persist alerts, users, sessions, config across container restarts
       - wids-data:/app/data
-    # For live packet capture on Linux host, add:
-    # cap_add:
-    #   - NET_RAW
-    #   - NET_ADMIN
-    # network_mode: host
-    # (then remove 'ports' section above)
 
 volumes:
   wids-data:

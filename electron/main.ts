@@ -18,6 +18,44 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let serverProcess: ChildProcess | null = null;
 
+// ── Ensure .env.local exists for the backend ────────────────────────────────
+// On first run (no .env.local next to the app), copy from the bundled template.
+// The template has safe defaults (URL, publishable key) but no secret key —
+// the app runs in fully-local mode until the user adds one.
+function ensureEnvFile(): void {
+  const envDir = isDev ? path.join(__dirname, "..") : process.resourcesPath ?? "";
+  const envPath = path.join(envDir, ".env.local");
+  const templatePath = path.join(envDir, ".env.template");
+
+  if (fs.existsSync(envPath)) return; // already configured
+
+  // Try copying the bundled template
+  if (fs.existsSync(templatePath)) {
+    try {
+      fs.copyFileSync(templatePath, envPath);
+      console.log("[electron] Created .env.local from template");
+      return;
+    } catch (e) {
+      console.warn("[electron] Could not copy .env.template:", e);
+    }
+  }
+
+  // Fallback: write minimal env with safe defaults so the server starts
+  const minimal = [
+    "SUPABASE_URL=https://kuntnvlvyuqetiorvlve.supabase.co",
+    'SUPABASE_PUBLISHABLE_KEY=sb_publishable_pEeWmRrCl_NB77xSmIkenA_J3srWmtZ',
+    "SUPABASE_SECRET_KEY=",
+    "CAPTURE_IFACE=Wi-Fi",
+    "",
+  ].join("\n");
+  try {
+    fs.writeFileSync(envPath, minimal);
+    console.log("[electron] Created minimal .env.local");
+  } catch (e) {
+    console.warn("[electron] Could not write .env.local:", e);
+  }
+}
+
 // ── Check and install Npcap if missing (Windows only) ─────────────────────────
 function checkNpcap(): boolean {
   if (process.platform !== "win32") return true;
@@ -175,6 +213,9 @@ app.whenReady().then(async () => {
 
   // Check for Npcap on Windows — prompt install if missing
   await promptNpcapInstall();
+
+  // Create .env.local from template on first run
+  ensureEnvFile();
 
   await startBackend();
 

@@ -1,0 +1,245 @@
+name: Desktop — Build & Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build (win, linux, mac, all)"
+        required: false
+        default: "all"
+
+jobs:
+  # ── Windows ─────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env.local from secrets
+        shell: bash
+        run: |
+          cat > .env.local << 'ENVEOF'
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY=${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY=${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_JWKS_URL=${{ secrets.SUPABASE_JWKS_URL }}
+          VITE_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY=${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          APP_URL=http://localhost:3000
+          CAPTURE_IFACE=Wi-Fi
+          ENVEOF
+
+      - name: Build frontend + server
+        run: npm run build:all
+
+      - name: Compile Electron main process
+        run: npx tsc -p electron/tsconfig.json
+
+      - name: Build Electron app (NSIS installer)
+        run: npx electron-builder --win --config.win.target=nsis
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Electron app (portable)
+        run: npx electron-builder --win --config.win.target=portable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: salamanda-wids-windows
+          path: |
+            release/*.exe
+            release/*.yml
+
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env.local from secrets
+        shell: bash
+        run: |
+          cat > .env.local << 'ENVEOF'
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY=${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY=${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_JWKS_URL=${{ secrets.SUPABASE_JWKS_URL }}
+          VITE_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY=${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          APP_URL=http://localhost:3000
+          CAPTURE_IFACE=eth0
+          ENVEOF
+
+      - name: Build frontend + server
+        run: npm run build:all
+
+      - name: Compile Electron main process
+        run: npx tsc -p electron/tsconfig.json
+
+      - name: Build Electron app (AppImage + deb)
+        run: npx electron-builder --linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: salamanda-wids-linux
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.yml
+
+  # ── macOS ───────────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env.local from secrets
+        shell: bash
+        run: |
+          cat > .env.local << 'ENVEOF'
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY=${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY=${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_JWKS_URL=${{ secrets.SUPABASE_JWKS_URL }}
+          VITE_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY=${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          APP_URL=http://localhost:3000
+          CAPTURE_IFACE=en0
+          ENVEOF
+
+      - name: Build frontend + server
+        run: npm run build:all
+
+      - name: Compile Electron main process
+        run: npx tsc -p electron/tsconfig.json
+
+      - name: Build Electron app (DMG)
+        run: npx electron-builder --mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: salamanda-wids-macos
+          path: |
+            release/*.dmg
+            release/*.yml
+
+  # ── Publish GitHub Release ──────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-linux, build-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SALAMANDA WIDS Desktop ${{ github.ref_name }}
+          body: |
+            ## SALAMANDA WIDS ${{ github.ref_name }} — Desktop Application
+
+            ### Downloads
+
+            | Platform | File | Description |
+            |----------|------|-------------|
+            | Windows | `SALAMANDA-WIDS-Setup-*.exe` | NSIS installer (recommended) |
+            | Windows | `SALAMANDA-WIDS-*.exe` | Portable — no install needed |
+            | Linux | `SALAMANDA-WIDS-*.AppImage` | Run from anywhere, no install |
+            | Linux | `SALAMANDA-WIDS-*.deb` | Debian/Ubuntu installer |
+            | macOS | `SALAMANDA-WIDS-*.dmg` | macOS disk image |
+
+            ### Quick Start
+
+            1. Download the file for your platform
+            2. **Windows**: Run the `.exe` installer (requires admin for Npcap capture)
+            3. **Linux**: `chmod +x SALAMANDA-WIDS-*.AppImage && ./SALAMANDA-WIDS-*.AppImage`
+            4. **macOS**: Open the `.dmg` and drag SALAMANDA to Applications
+            5. The app starts automatically and opens the dashboard
+
+            ### Features
+
+            - Live WiFi packet capture (requires Npcap on Windows)
+            - 3 detection pipelines: Signature, Statistical Anomaly, ML Scoring
+            - 10 dashboard tabs with realtime updates via SSE
+            - Self-contained auth (scrypt + 2FA OTP)
+            - Cloud DB sync via Supabase (pre-configured)
+
+            ### Notes
+
+            - Without Npcap installed, the app runs in simulator mode (synthetic traffic at 5 pkt/s)
+            - On first run, a `.env.local` is created from the bundled template
+            - To enable cloud sync, add your `SUPABASE_SECRET_KEY` to `.env.local`
+            - The `.env.local` file is located in the app's installation directory
+          files: |
+            artifacts/salamanda-wids-windows/*.exe
+            artifacts/salamanda-wids-linux/*.AppImage
+            artifacts/salamanda-wids-linux/*.deb
+            artifacts/salamanda-wids-macos/*.dmg
+          draft: false
+          prerelease: false

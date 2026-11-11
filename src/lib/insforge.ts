@@ -1,3 +1,5 @@
+import { getSupabaseToken } from "./supabase";
+
 // ── LocalUser type ────────────────────────────────────────────────────────────
 export interface LocalUser {
   id: string;
@@ -8,6 +10,18 @@ export interface LocalUser {
 
 // ── Auth state ───────────────────────────────────────────────────────────────
 let authToken: string | null = null;
+
+/**
+ * Returns the best available Bearer token:
+ *   1. Active Supabase JWT (verified server-side via JWKS)
+ *   2. Local session token (hex string from local auth)
+ * Use this for all authenticated API calls.
+ */
+export async function getBestToken(): Promise<string | null> {
+  const supabaseToken = await getSupabaseToken();
+  if (supabaseToken) return supabaseToken;
+  return getStoredToken();
+}
 
 function setAuthToken(token: string | null) {
   authToken = token;

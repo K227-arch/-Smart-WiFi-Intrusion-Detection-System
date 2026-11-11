@@ -76,7 +76,8 @@ async function resolveHostname(ip: string): Promise<string | null> {
 }
 
 // ── Safe fire-and-forget DB write — silently drops on network error ───────────
-function dbWrite(query: Promise<any> | { then?: Function; catch?: Function }, label?: string) {
+function dbWrite(query: Promise<any> | { then?: Function; catch?: Function } | null | undefined, label?: string) {
+  if (!query) return; // no-op when Supabase is unconfigured
   // Support both Promises and Supabase query builders
   const promise = "then" in query && typeof query.then === "function" ? query : (query as Promise<any>);
   promise.then((res: any) => {
@@ -196,8 +197,118 @@ import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "https://kuntnvlvyuqetiorvlve.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
+const SUPABASE_JWKS_URL = process.env.SUPABASE_JWKS_URL ?? `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`;
 
-const supabaseDb = createClient(SUPABASE_URL, SUPABASE_KEY);
+// Guard: createClient throws if key is empty — skip DB sync when unconfigured
+const supabaseDb = SUPABASE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null as unknown as ReturnType<typeof createClient>;
+if (!SUPABASE_KEY) console.warn("⚠ SUPABASE_SECRET_KEY not set — DB sync disabled, running fully local.");
+
+// ── JWKS cache — fetched once, refreshed every 12 h ──────────────────────────
+interface JwksKey { kid: string; n: string; e: string; kty: string; alg: string; use: string; }
+let jwksCache: JwksKey[] = [];
+let jwksCacheExpiry = 0;
+
+async function getJwks(): Promise<JwksKey[]> {
+  if (jwksCache.length && Date.now() < jwksCacheExpiry) return jwksCache;
+  try {
+    const res = await fetch(SUPABASE_JWKS_URL);
+    if (!res.ok) throw new Error(`JWKS fetch ${res.status}`);
+    const json = await res.json() as { keys: JwksKey[] };
+    jwksCache = json.keys ?? [];
+    jwksCacheExpiry = Date.now() + 12 * 60 * 60 * 1000; // 12 h
+    return jwksCache;
+  } catch (e: any) {
+    console.warn("⚠ JWKS fetch failed:", e?.message ?? e);
+    return jwksCache; // return stale cache on error rather than breaking auth
+  }
+}
+
+// Base64url → Buffer helper
+function b64urlToBuffer(b64: string): Buffer {
+  return Buffer.from(b64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
+// Verify a Supabase-issued JWT using the JWKS public key.
+// Returns the decoded payload on success, null on failure.
+async function verifySupabaseJwt(token: string): Promise<Record<string, any> | null> {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+
+    const headerJson = JSON.parse(Buffer.from(b64urlToBuffer(parts[0])).toString("utf-8"));
+    const kid: string = headerJson.kid ?? "";
+    const alg: string = headerJson.alg ?? "RS256";
+
+    if (!["RS256", "RS384", "RS512"].includes(alg)) return null; // only RSA supported
+
+    const keys = await getJwks();
+    const jwk = keys.find((k) => (!kid || k.kid === kid) && k.kty === "RSA");
+    if (!jwk) return null;
+
+    // Import the RSA public key from JWK components
+    const keyObj = await crypto.subtle.importKey(
+      "jwk",
+      { kty: "RSA", n: jwk.n, e: jwk.e, alg, use: "sig" },
+      { name: "RSASSA-PKCS1-v1_5", hash: `SHA-${alg.slice(2)}` },
+      false,
+      ["verify"]
+    );
+
+    const signingInput = Buffer.from(`${parts[0]}.${parts[1]}`);
+    const signature = b64urlToBuffer(parts[2]);
+
+    const valid = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      keyObj,
+      signature,
+      signingInput
+    );
+    if (!valid) return null;
+
+    const payload = JSON.parse(Buffer.from(b64urlToBuffer(parts[1])).toString("utf-8"));
+
+    // Check expiry
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// ── requireAuth — accepts local session token OR Supabase JWT ─────────────────
+// Drop-in replacement for requireLocalAuth that also accepts Supabase-issued
+// access tokens (e.g. from the frontend Supabase Auth client).
+// Attaches req.authUser = { id, email, source: "local" | "supabase" }
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return res.status(401).json({ error: "Unauthorized" });
+  const token = auth.slice(7);
+
+  // 1. Try local session first (fast — no network)
+  const session = loadSessions().find((s) => s.token === token && s.expiresAt > Date.now());
+  if (session) {
+    (req as any).authUser = { id: session.userId, email: session.email, source: "local" };
+    (req as any).localUser = session; // backward compat for existing routes
+    return next();
+  }
+
+  // 2. Try Supabase JWT (requires JWKS fetch, cached)
+  const payload = await verifySupabaseJwt(token);
+  if (payload) {
+    (req as any).authUser = {
+      id: payload.sub ?? payload.user_id ?? "",
+      email: payload.email ?? "",
+      role: payload.role ?? "authenticated",
+      source: "supabase",
+    };
+    return next();
+  }
+
+  return res.status(401).json({ error: "Session expired or invalid" });
+}
 
 // --- Types ---
 interface WiFiPacket {
@@ -1064,14 +1175,14 @@ const detectionEngine = {
           resolveHostname(resolvedIp).then((hostname) => {
             if (hostname && existing) {
               existing.hostname = hostname;
-              dbWrite(supabaseDb.from("devices").update({
+              dbWrite(supabaseDb?.from("devices").update({
                 ip_address: resolvedIp,
                 hostname,
                 updated_at: new Date().toISOString(),
               }).eq("mac", existing.mac), "device hostname update");
             }
           });
-          dbWrite(supabaseDb.from("devices").update({
+          dbWrite(supabaseDb?.from("devices").update({
             ip_address: resolvedIp,
             updated_at: new Date().toISOString(),
           }).eq("mac", existing.mac), "device ip update");
@@ -1098,7 +1209,7 @@ const detectionEngine = {
         resolveHostname(ipAddress).then((hostname) => {
           if (hostname) {
             newDevice.hostname = hostname;
-            dbWrite(supabaseDb.from("devices").update({
+            dbWrite(supabaseDb?.from("devices").update({
               hostname,
               updated_at: new Date().toISOString(),
             }).eq("mac", newDevice.mac), "device hostname");
@@ -1109,7 +1220,7 @@ const detectionEngine = {
       broadcastDevice(newDevice);
 
       // ── Write new device to Insforge (upsert to handle restarts) ──
-      dbWrite(supabaseDb.from("devices").upsert([{
+      dbWrite(supabaseDb?.from("devices").upsert([{
         mac: newDevice.mac,
         first_seen: new Date(newDevice.firstSeen).toISOString(),
         last_seen: new Date(newDevice.lastSeen).toISOString(),
@@ -1243,7 +1354,7 @@ const detectionEngine = {
         const arpEntry = networkAnalyzer.getArpTable().find((e) => e.mac === packet.sourceMac);
         if (arpEntry?.ip) {
           existing.ipAddress = arpEntry.ip;
-          dbWrite(supabaseDb.from("devices").update({ ip_address: arpEntry.ip, updated_at: new Date().toISOString() }).eq("mac", existing.mac), "device ip");
+          dbWrite(supabaseDb?.from("devices").update({ ip_address: arpEntry.ip, updated_at: new Date().toISOString() }).eq("mac", existing.mac), "device ip");
         }
       }
     } else {
@@ -1256,7 +1367,7 @@ const detectionEngine = {
       };
       devices.set(packet.sourceMac, newDevice);
       broadcastDevice(newDevice);
-      dbWrite(supabaseDb.from("devices").upsert([{
+      dbWrite(supabaseDb?.from("devices").upsert([{
         mac: newDevice.mac, first_seen: new Date(newDevice.firstSeen).toISOString(), last_seen: new Date(newDevice.lastSeen).toISOString(),
         status: newDevice.status, ssid: null, avg_signal: newDevice.avgSignal,
         ip_address: newDevice.ipAddress ?? null, hostname: null,
@@ -1274,7 +1385,7 @@ function updateTrafficBucket(packet: WiFiPacket) {
 
       // ── Persist completed bucket to Insforge ──
       const bucket = currentBucket;
-      dbWrite(supabaseDb.from("traffic_buckets").insert([{
+      dbWrite(supabaseDb?.from("traffic_buckets").insert([{
         time: new Date(bucketStartTime).toISOString(),
         device_mac: null,
         data_count: bucket.data,
@@ -1318,7 +1429,7 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
   saveAlerts(alerts);
 
   // ── Write to Insforge DB (triggers realtime broadcast to frontend) ──
-  dbWrite(supabaseDb.from("alerts").insert([{
+  dbWrite(supabaseDb?.from("alerts").insert([{
     id: newAlert.id,
     timestamp: newAlert.timestamp,
     type: newAlert.type,
@@ -1332,10 +1443,10 @@ function addAlert(alertData: Omit<Alert, "id" | "timestamp">, dedupWindowMs: num
   }]), "alert insert");
 
   // Update detection_stats running totals (best-effort, non-blocking)
-  Promise.resolve(supabaseDb.from("detection_stats").select().eq("id", 1).maybeSingle()).then(({ data }) => {
+  Promise.resolve(supabaseDb?.from("detection_stats").select().eq("id", 1).maybeSingle()).then(({ data }) => {
     if (!data) return;
     const dc = { ...(data.detection_counts ?? {}), [alertData.type]: (data.detection_counts?.[alertData.type] ?? 0) + 1 };
-    dbWrite(supabaseDb.from("detection_stats").update({
+    dbWrite(supabaseDb?.from("detection_stats").update({
       detection_counts: dc,
       total_packets_processed: totalPacketsProcessed,
       updated_at: new Date().toISOString(),
@@ -1589,7 +1700,7 @@ Rules:
     const sessionId = `${userId}-${now}`;
 
     // Upsert session — one active session per user
-    dbWrite(supabaseDb.from("user_sessions").upsert([{
+    dbWrite(supabaseDb?.from("user_sessions").upsert([{
       id: sessionId,
       user_id: userId,
       email,
@@ -1613,7 +1724,7 @@ Rules:
   app.post("/api/session/heartbeat", async (req, res) => {
     const { sessionId } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
-    dbWrite(supabaseDb.from("user_sessions").update({
+    dbWrite(supabaseDb?.from("user_sessions").update({
       last_seen_at: new Date().toISOString(),
       is_active: true,
     }).eq("id", sessionId), "session heartbeat");
@@ -1624,7 +1735,7 @@ Rules:
   app.post("/api/session/leave", async (req, res) => {
     const { sessionId, userId, email } = req.body;
     if (sessionId) {
-      dbWrite(supabaseDb.from("user_sessions").update({ is_active: false }).eq("id", sessionId), "session leave");
+      dbWrite(supabaseDb?.from("user_sessions").update({ is_active: false }).eq("id", sessionId), "session leave");
     }
     const payload = JSON.stringify({ type: "session_leave", userId, email });
     sseClients.forEach((c) => c.write(`event: session\ndata: ${payload}\n\n`));
@@ -2094,7 +2205,7 @@ Rules:
     if (idx === -1) return { ok: false };
     const [removed] = alerts.splice(idx, 1);
     falsePositiveCounts[removed.type] = (falsePositiveCounts[removed.type] || 0) + 1;
-    dbWrite(supabaseDb.from("alerts").update({ dismissed: true }).eq("id", id), "alert dismiss");
+    dbWrite(supabaseDb?.from("alerts").update({ dismissed: true }).eq("id", id), "alert dismiss");
     saveAlerts(alerts);
     return { ok: true, removed };
   }
@@ -2118,7 +2229,7 @@ Rules:
   // DELETE /api/alerts — clear all alerts (legacy / REST style)
   app.delete("/api/alerts", (_req, res) => {
     alerts = [];
-    dbWrite(supabaseDb.from("alerts").update({ dismissed: true }).eq("dismissed", false), "alerts clear");
+    dbWrite(supabaseDb?.from("alerts").update({ dismissed: true }).eq("dismissed", false), "alerts clear");
     saveAlerts(alerts);
     res.json({ message: "All alerts cleared" });
   });
@@ -2126,7 +2237,7 @@ Rules:
   // POST /api/alerts/clear — clear all alerts (frontend style)
   app.post("/api/alerts/clear", (_req, res) => {
     alerts = [];
-    dbWrite(supabaseDb.from("alerts").update({ dismissed: true }).eq("dismissed", false), "alerts clear");
+    dbWrite(supabaseDb?.from("alerts").update({ dismissed: true }).eq("dismissed", false), "alerts clear");
     saveAlerts(alerts);
     res.json({ message: "All alerts cleared" });
   });
@@ -2169,7 +2280,7 @@ Rules:
     config.trustedMacs = [...trustedMacs];
     saveConfig(config);
     // Sync status to InsForge DB
-    dbWrite(supabaseDb.from("devices").update({
+    dbWrite(supabaseDb?.from("devices").update({
       status,
       updated_at: new Date().toISOString(),
     }).eq("mac", mac), "device status update");
@@ -2273,7 +2384,7 @@ Rules:
 
     // ── Clear stale dismissed/old alerts from DB on startup ──────────────────
     dbWrite(
-      supabaseDb.from("alerts").update({ dismissed: true })
+      supabaseDb?.from("alerts").update({ dismissed: true })
         .lt("timestamp", new Date(Date.now() - 86_400_000).toISOString()),
       "startup alert cleanup"
     );
@@ -2366,7 +2477,7 @@ Rules:
 
     // ── Sync packet count + detection stats to Insforge every 30s ──
     setInterval(() => {
-      dbWrite(supabaseDb.from("detection_stats").update({
+      dbWrite(supabaseDb?.from("detection_stats").update({
         detection_counts: detectionCounts,
         total_packets_processed: totalPacketsProcessed,
         updated_at: new Date().toISOString(),

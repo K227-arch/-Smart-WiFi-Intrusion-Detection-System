@@ -1,9 +1,38 @@
+# ── Build artifacts (rebuilt inside Docker) ───────────────────────────────────
 node_modules
 dist
+release
+build
+
+# ── Git / IDE ─────────────────────────────────────────────────────────────────
 .git
+.gitignore
+.vscode
+.claude
+.kiro
+
+# ── Secrets — NEVER bake into image ──────────────────────────────────────────
 .env
+.env.local
+.env.*.local
+
+# ── Logs & runtime files ──────────────────────────────────────────────────────
 *.log
+server.err
+
+# ── Data directory — only include seed/default files ─────────────────────────
 data/
 !data/wids-config.json
-functions/
-.vscode/
+!data/wids.rules
+
+# ── Platform-specific / large files not needed in Docker ─────────────────────
+electron/
+capacitor.config.ts
+SALAMANDA_Documentation.docx
+public/AI_Training_Guide_SALAMANDA.pdf
+scripts/install-npcap.bat
+supabase/
+.vercel/
+
+# ── Docker override examples (not needed inside image) ───────────────────────
+docker-compose.override*.yml

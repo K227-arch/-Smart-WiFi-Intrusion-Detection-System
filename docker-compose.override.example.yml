@@ -1,27 +1,35 @@
-# Example: Live Packet Capture on Linux
-# Copy this to docker-compose.override.yml and uncomment the sections
+# ═══════════════════════════════════════════════════════════════════════════════
+# SALAMANDA WIDS — Live Capture Override (Linux only)
 #
-# This enables direct access to host network interfaces for live capture
-# ONLY works on Linux hosts (not Windows/macOS)
+# Enables direct access to host network interfaces for live Wi-Fi/Ethernet
+# packet capture. Only works on Linux hosts with kernel >= 4.3.
+#
+# USAGE:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   # Edit CAPTURE_IFACE below (run: ip link show  to list interfaces)
+#   docker compose up -d
+#
+# Windows / macOS:
+#   Live capture is not supported in Docker Desktop.
+#   The app auto-falls back to simulator mode (synthetic traffic at 5 pkt/s).
+#   For native live capture on Windows install Npcap and run outside Docker.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# version: "3.9"
+services:
+  salamanda-wids:
+    # Host networking gives the container direct access to all physical interfaces
+    network_mode: host
 
-# services:
-#   salamanda-wids:
-#     # Enable host networking for direct interface access
-#     network_mode: host
-#
-#     # Add Linux capabilities for packet capture
-#     cap_add:
-#       - NET_RAW
-#       - NET_ADMIN
-#
-#     # Remove ports section when using host networking
-#     # ports:
-#     #   - "3001:3000"
-#
-#     # Set your WiFi interface name (use 'ip link show' or 'ifconfig' to find it)
-#     environment:
-#       CAPTURE_IFACE: wlan0
-#       # Optional: BPF filter to limit captured traffic
-#       # CAPTURE_FILTER: "tcp or udp or icmp"
+    # Grant Linux capabilities for raw socket / packet capture
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+    # Remove the bridge-mode port mapping when using host networking
+    ports: !reset []
+
+    environment:
+      # Set to your wireless interface (run: ip link show | grep -E 'wlan|wlp|en')
+      CAPTURE_IFACE: wlan0
+      # Optional BPF filter — leave empty to capture everything
+      # CAPTURE_FILTER: "not port 22"

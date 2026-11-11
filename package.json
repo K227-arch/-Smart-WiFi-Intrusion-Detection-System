@@ -1,7 +1,7 @@
 {
   "name": "salamanda-wids",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Smart WiFi Intrusion Detection System",
   "author": "SALAMANDA Team",
   "type": "module",
@@ -16,9 +16,9 @@
     "build:all": "npm run build && npm run build:server",
     "desktop": "electron .",
     "desktop:dev": "npx concurrently -k \"npm run dev\" \"npx wait-on http://localhost:3000 && electron .\"",
-    "desktop:build:win": "npm run build:all && npx electron-builder --win --config.win.target=nsis",
-    "desktop:build:portable": "npm run build:all && npx electron-builder --win --config.win.target=portable",
-    "desktop:build:linux": "npm run build:all && npx electron-builder --linux",
+    "desktop:build:win": "npm run build:all && npx tsc -p electron/tsconfig.json && npx electron-builder --win --config.win.target=nsis",
+    "desktop:build:portable": "npm run build:all && npx tsc -p electron/tsconfig.json && npx electron-builder --win --config.win.target=portable",
+    "desktop:build:linux": "npm run build:all && npx tsc -p electron/tsconfig.json && npx electron-builder --linux",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist release server.js",
     "lint": "tsc --noEmit"
@@ -58,6 +58,15 @@
       {
         "from": "installers",
         "to": "installers"
+      },
+      {
+        "from": ".env.template",
+        "to": ".env.template"
+      },
+      {
+        "from": ".env.local",
+        "to": ".env.local",
+        "optional": true
       }
     ],
     "win": {
