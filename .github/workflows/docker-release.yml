@@ -29,6 +29,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── Derive clean version string (strips leading "v") ─────────────────
+      - name: Set version env var
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="${{ github.event.inputs.tag || 'latest' }}"
+          fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME:-$VER}" >> "$GITHUB_OUTPUT"
+
       # ── Set up QEMU for multi-arch builds (amd64 + arm64) ──────────────────
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -55,15 +67,15 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             org.opencontainers.image.title=SALAMANDA WIDS
             org.opencontainers.image.description=Smart Adaptive Local Area Monitoring And Network Defense Architecture
             org.opencontainers.image.vendor=SALAMANDA
 
-      # ── Build and push multi-arch image ──────────────────────────────────
-      - name: Build and push Docker image
+      # ── Build and push multi-arch image (registry) ───────────────────────
+      - name: Build and push Docker image (multi-arch)
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -78,42 +90,41 @@ jobs:
           provenance: true
           sbom: true
 
-      # ── Export image as a .tar.gz for the GitHub Release asset ──────────
+      # ── Export amd64 tarball for offline/air-gapped install ──────────────
+      # Build single-arch into a local docker-tar OCI archive, then gzip it
       - name: Export image tarball (amd64)
         run: |
-          docker pull --platform linux/amd64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-          docker save ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }} \
-            | gzip > salamanda-wids-${{ steps.meta.outputs.version }}-linux-amd64.tar.gz
-
-      - name: Export image tarball (arm64)
-        run: |
-          docker pull --platform linux/arm64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-          docker save ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }} \
-            | gzip > salamanda-wids-${{ steps.meta.outputs.version }}-linux-arm64.tar.gz
+          docker buildx build \
+            --platform linux/amd64 \
+            --output "type=docker,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.ver }}" \
+            --load \
+            . 2>&1 | tail -5
+          docker save "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.ver }}" \
+            | gzip > salamanda-wids-${{ steps.version.outputs.ver }}-linux-amd64.tar.gz
+          echo "amd64 tarball: $(du -sh salamanda-wids-${{ steps.version.outputs.ver }}-linux-amd64.tar.gz)"
 
       # ── Create / update GitHub Release ──────────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: SALAMANDA WIDS ${{ steps.meta.outputs.version }}
+          name: SALAMANDA WIDS ${{ steps.version.outputs.ver }}
           body: |
-            ## SALAMANDA WIDS ${{ steps.meta.outputs.version }}
+            ## SALAMANDA WIDS ${{ steps.version.outputs.ver }}
 
-            ### Docker (recommended)
+            ### Docker (recommended — all dependencies included)
 
             ```bash
-            # Pull and run — all dependencies included, no install needed
-            docker pull ghcr.io/${{ github.repository_owner }}/salamanda-wids:${{ steps.meta.outputs.version }}
+            docker pull ghcr.io/${{ github.repository_owner }}/salamanda-wids:${{ steps.version.outputs.ver }}
             docker run -d --name salamanda-wids \
               -p 3001:3000 \
               --restart unless-stopped \
-              ghcr.io/${{ github.repository_owner }}/salamanda-wids:${{ steps.meta.outputs.version }}
+              ghcr.io/${{ github.repository_owner }}/salamanda-wids:${{ steps.version.outputs.ver }}
             ```
 
             Access the dashboard at **http://localhost:3001**
 
-            ### Docker Compose (with live capture on Linux)
+            ### Docker Compose
 
             ```bash
             curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
@@ -132,19 +143,17 @@ jobs:
 
             ### Offline / Air-gapped Install
 
-            Download the `.tar.gz` asset below and load it:
             ```bash
-            docker load < salamanda-wids-${{ steps.meta.outputs.version }}-linux-amd64.tar.gz
-            docker run -d -p 3001:3000 ghcr.io/${{ github.repository_owner }}/salamanda-wids:${{ steps.meta.outputs.version }}
+            docker load < salamanda-wids-${{ steps.version.outputs.ver }}-linux-amd64.tar.gz
+            docker run -d -p 3001:3000 ghcr.io/${{ github.repository_owner }}/salamanda-wids:${{ steps.version.outputs.ver }}
             ```
 
             ### Notes
-            - **Windows / macOS**: runs in simulator mode (synthetic traffic). For native live capture on Windows, install [Npcap](https://npcap.com) and run outside Docker.
-            - **Linux**: live capture works with `--cap-add=NET_RAW --cap-add=NET_ADMIN`.
+            - **Windows / macOS**: runs in simulator mode (synthetic traffic). For native live capture on Windows, install [Npcap](https://npcap.com).
+            - **Linux**: live capture works with `--cap-add=NET_RAW --cap-add=NET_ADMIN` (see `docker-compose.override.example.yml`).
             - Image digest: `${{ steps.build.outputs.digest }}`
           files: |
-            salamanda-wids-${{ steps.meta.outputs.version }}-linux-amd64.tar.gz
-            salamanda-wids-${{ steps.meta.outputs.version }}-linux-arm64.tar.gz
+            salamanda-wids-${{ steps.version.outputs.ver }}-linux-amd64.tar.gz
             docker-compose.yml
             docker-compose.override.example.yml
             .env.example
@@ -164,7 +173,7 @@ jobs:
             -e NODE_ENV=production \
             -e HOST=0.0.0.0 \
             ghcr.io/${{ env.IMAGE_NAME }}:latest
-          sleep 20
+          sleep 25
 
       - name: Health check
         run: |
