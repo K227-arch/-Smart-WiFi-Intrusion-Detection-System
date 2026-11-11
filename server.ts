@@ -2561,11 +2561,36 @@ interface PendingOtp {
   purpose: "signin" | "signup";
 }
 
-const AUTH_DATA_DIR = path.join(process.cwd(), "data");
+const AUTH_DATA_DIR = (() => {
+  // In packaged Electron, process.resourcesPath may be read-only (Program Files).
+  // Use a user-writable directory for auth data so accounts survive reinstalls.
+  if (process.env.APPDATA) {
+    const dir = path.join(process.env.APPDATA, "SALAMANDA-WIDS", "data");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // Migrate existing users/sessions from old location if present
+    const oldUsers = path.join(process.cwd(), "data", "wids-users.json");
+    const newUsers = path.join(dir, "wids-users.json");
+    if (fs.existsSync(oldUsers) && !fs.existsSync(newUsers)) {
+      try { fs.copyFileSync(oldUsers, newUsers); } catch { /* ignore */ }
+    }
+    const oldSessions = path.join(process.cwd(), "data", "wids-sessions.json");
+    const newSessions = path.join(dir, "wids-sessions.json");
+    if (fs.existsSync(oldSessions) && !fs.existsSync(newSessions)) {
+      try { fs.copyFileSync(oldSessions, newSessions); } catch { /* ignore */ }
+    }
+    return dir;
+  }
+  if (process.env.HOME) {
+    const dir = path.join(process.env.HOME, ".salamanda-wids", "data");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  return path.join(process.cwd(), "data");
+})();
 const USERS_FILE   = path.join(AUTH_DATA_DIR, "wids-users.json");
 const SESSIONS_FILE = path.join(AUTH_DATA_DIR, "wids-sessions.json");
 const OTP_EXPIRY_MS     = 10 * 60 * 1000;          // 10 minutes
-const SESSION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const pendingOtps = new Map<string, PendingOtp>();  // email → OTP (in-memory)
 
 function loadUsers(): LocalUser[] {
