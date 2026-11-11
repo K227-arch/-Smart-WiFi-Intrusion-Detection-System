@@ -19,12 +19,21 @@ type CaptureState = "running" | "paused" | "stopped";
 
 // ── Detect whether the SSE stream is available ────────────────────────────────
 async function checkSseAvailable(): Promise<boolean> {
+  // Probe /api/status first (fast JSON) — if it responds, SSE is available on the same server
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch("/api/stream", { method: "GET", signal: controller.signal });
-    clearTimeout(timer);
-    return res.status !== 501;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch("/api/status", { signal: ctrl.signal });
+    clearTimeout(t);
+    if (res.ok) return true;
+  } catch { /* fall through */ }
+  // Secondary: probe /api/stream directly
+  try {
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 5000);
+    const res2 = await fetch("/api/stream", { method: "GET", signal: ctrl2.signal });
+    clearTimeout(t2);
+    return res2.status !== 501;
   } catch {
     return false;
   }
